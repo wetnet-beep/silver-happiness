@@ -10,7 +10,6 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN", "ВСТАВЬ_ТОКЕН_СЮДА")
 PASSWORD = "qwer1"
 ADMIN_ID = None
 
-AFK_TIMEOUT = 2 * 60 * 60      # 2 часа
 AFK_SHORT_THRESHOLD = 5 * 60   # 5 минут
 AFK_RECHECK_DELAY = 10 * 60    # 10 минут
 
@@ -28,6 +27,9 @@ afk_enabled = False
 last_activity = time.time()
 afk_emoji_id = None
 afk_emoji_fallback = "🌙"
+back_emoji_id = None
+afk_timeout = 2 * 60 * 60  # по умолчанию 2 часа
+
 business_conn_id = None
 
 # ===== АВТОРИЗАЦИЯ =====
@@ -53,13 +55,15 @@ def check_password(m):
             "Команды:\n"
             "/afk_on — включить АФК вручную\n"
             "/afk_off — выключить АФК\n"
+            "/afk_time 300 — время АФК (30–86400 сек)\n"
+            "/set_back_emoji — задать эмодзи для возврата\n"
             "/status — статус"
         )
         logger.info(f"Админ авторизован: {m.from_user.id}")
     else:
         bot.send_message(m.chat.id, "❌ Неверный пароль. Попробуй ещё раз:")
 
-# ===== ПОЛУЧЕНИЕ ID ЭМОДЗИ =====
+# ===== ПОЛУЧЕНИЕ ID ЭМОДЗИ АФК =====
 @bot.message_handler(
     func=lambda m: m.from_user.id == ADMIN_ID 
     and m.text 
@@ -82,13 +86,66 @@ def extract_emoji_id(m):
             logger.info(f"Эмодзи-статус сохранён: {afk_emoji_id}")
             return
 
+# ===== РУЧНОЕ ЗАДАНИЕ ЭМОДЗИ ДЛЯ ВОЗВРАТА =====
+@bot.message_handler(commands=['set_back_emoji'])
+def set_back_emoji_cmd(m):
+    if m.from_user.id != ADMIN_ID:
+        return
+    bot.send_message(
+        m.chat.id,
+        "Отправь Premium-эмодзи, который надо возвращать после АФК.\n"
+        "Или напиши `clear`, чтобы статус просто убирался.",
+        parse_mode="Markdown"
+    )
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id == ADMIN_ID 
+    and m.text == 'clear',
+    content_types=['text']
+)
+def clear_back_emoji(m):
+    global back_emoji_id
+    back_emoji_id = None
+    bot.send_message(m.chat.id, "✅ Статус возврата сброшен. После АФК статус будет убираться.")
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id == ADMIN_ID 
+    and m.text 
+    and m.entities 
+    and any(e.type == 'custom_emoji' for e in m.entities),
+    content_types=['text']
+)
+def extract_back_emoji_id(m):
+    global back_emoji_id
+    for entity in m.entities:
+        if entity.type == 'custom_emoji':
+            back_emoji_id = entity.custom_emoji_id
+            bot.send_message(
+                m.chat.id,
+                f"✅ Эмодзи для возврата сохранён!\nID: `{back_emoji_id}`",
+                parse_mode="Markdown"
+            )
+            logger.info(f"Эмодзи возврата сохранён: {back_emoji_id}")
+            return
+
 # ===== АФК ЛОГИКА =====
 def enter_afk():
-    global afk_enabled, ADMIN_ID, afk_emoji_id
+    global afk_enabled, ADMIN_ID, afk_emoji_id, back_emoji_id
     if afk_enabled:
         return
     afk_enabled = True
     logger.info("АФК ВКЛЮЧЁН")
+
+    # Пробуем запомнить текущий статус (может не сработать)
+    if ADMIN_ID and back_emoji_id is None:
+        try:
+            chat_info = bot.get_chat(ADMIN_ID)
+            if hasattr(chat_info, 'emoji_status_custom_emoji_id') and chat_info.emoji_status_custom_emoji_id:
+                back_emoji_id = chat_info.emoji_status_custom_emoji_id
+                logger.info(f"Запомнен старый статус: {back_emoji_id}")
+        except Exception as e:
+            logger.warning(f"Не удалось прочитать старый статус: {e}")
+
     if afk_emoji_id and ADMIN_ID:
         try:
             bot.set_user_emoji_status(
@@ -98,33 +155,43 @@ def enter_afk():
             logger.info(f"Статус установлен: {afk_emoji_id}")
         except Exception as e:
             logger.error(f"Ошибка смены статуса: {e}")
+
     if ADMIN_ID:
-        bot.send_message(ADMIN_ID, "🌙 АФК включён (молчал 2 часа)")
+        bot.send_message(ADMIN_ID, "🌙 АФК включён")
 
 def exit_afk():
-    global afk_enabled, ADMIN_ID
+    global afk_enabled, ADMIN_ID, back_emoji_id
     if not afk_enabled:
         return
     afk_enabled = False
     logger.info("АФК ВЫКЛЮЧЁН")
+
     if ADMIN_ID:
         try:
-            bot.set_user_emoji_status(
-                user_id=ADMIN_ID,
-                emoji_status_custom_emoji_id=""
-            )
-            logger.info("Статус снят")
+            if back_emoji_id:
+                bot.set_user_emoji_status(
+                    user_id=ADMIN_ID,
+                    emoji_status_custom_emoji_id=back_emoji_id
+                )
+                logger.info(f"Статус возвращён: {back_emoji_id}")
+            else:
+                bot.set_user_emoji_status(
+                    user_id=ADMIN_ID,
+                    emoji_status_custom_emoji_id=""
+                )
+                logger.info("Статус убран (старый неизвестен)")
         except Exception as e:
-            logger.error(f"Ошибка снятия статуса: {e}")
+            logger.error(f"Ошибка смены статуса: {e}")
+
         bot.send_message(ADMIN_ID, "☀️ АФК выключен")
 
 def afk_watcher():
-    global afk_enabled, last_activity
+    global afk_enabled, last_activity, afk_timeout
     while True:
         time.sleep(30)
         if afk_enabled:
             continue
-        if time.time() - last_activity >= AFK_TIMEOUT:
+        if time.time() - last_activity >= afk_timeout:
             enter_afk()
 
 def afk_recheck_watcher():
@@ -154,6 +221,40 @@ def manual_afk_off(m):
     last_activity = time.time()
     bot.send_message(m.chat.id, "АФК выключен вручную.")
 
+@bot.message_handler(commands=['afk_time'])
+def set_afk_time(m):
+    global afk_timeout
+    if m.from_user.id != ADMIN_ID:
+        return
+
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2:
+        h = afk_timeout // 3600
+        mnt = (afk_timeout % 3600) // 60
+        s = afk_timeout % 60
+        bot.send_message(
+            m.chat.id,
+            f"⏱ Текущее время АФК: {afk_timeout} сек ({h} ч {mnt} мин {s} сек)\n\n"
+            "Использование: `/afk_time 300`\n"
+            "От 30 до 86400 секунд (24 часа).",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        seconds = int(parts[1])
+        if seconds < 30 or seconds > 86400:
+            bot.send_message(m.chat.id, "❌ Время должно быть от 30 до 86400 секунд.")
+            return
+        afk_timeout = seconds
+        h = seconds // 3600
+        mnt = (seconds % 3600) // 60
+        s = seconds % 60
+        bot.send_message(m.chat.id, f"✅ Время АФК установлено: {seconds} сек ({h} ч {mnt} мин {s} сек)")
+        logger.info(f"Новое время АФК: {seconds} сек")
+    except ValueError:
+        bot.send_message(m.chat.id, "❌ Отправь число. Например: `/afk_time 300`", parse_mode="Markdown")
+
 @bot.message_handler(commands=['status'])
 def status_cmd(m):
     if m.from_user.id != ADMIN_ID:
@@ -164,7 +265,9 @@ def status_cmd(m):
         f"📊 Статус:\n"
         f"• АФК: {'ВКЛ' if afk_enabled else 'ВЫКЛ'}\n"
         f"• Молчание: {mins} мин\n"
-        f"• Эмодзи ID: {afk_emoji_id or 'не задан'}"
+        f"• Время АФК: {afk_timeout} сек\n"
+        f"• Эмодзи АФК: {afk_emoji_id or 'не задан'}\n"
+        f"• Эмодзи возврата: {back_emoji_id or 'убирается'}"
     )
     bot.send_message(m.chat.id, text)
 
