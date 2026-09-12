@@ -3,15 +3,13 @@ import time
 import threading
 import logging
 import os
-import re
 from telebot import types
 
 # ===== НАСТРОЙКИ =====
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "ВСТАВЬ_ТОКЕН_СЮДА")
 PASSWORD = "qwer1"
-ADMIN_ID = None  # Заполнится после авторизации
+ADMIN_ID = None
 
-# АФК настройки
 AFK_TIMEOUT = 2 * 60 * 60      # 2 часа
 AFK_SHORT_THRESHOLD = 5 * 60   # 5 минут
 AFK_RECHECK_DELAY = 10 * 60    # 10 минут
@@ -25,12 +23,11 @@ logger = logging.getLogger(__name__)
 bot = telebot.TeleBot(TOKEN, threaded=False)
 
 # ===== СОСТОЯНИЕ =====
-user_state = {}          # {user_id: 'awaiting_password' | 'authorized'}
+user_state = {}
 afk_enabled = False
 last_activity = time.time()
-afk_emoji_id = None      # ID эмодзи-статуса (заполняется из сообщения)
+afk_emoji_id = None
 afk_emoji_fallback = "🌙"
-base_name = "Твоё Имя"   # Твоё настоящее имя (для Business, если понадобится)
 business_conn_id = None
 
 # ===== АВТОРИЗАЦИЯ =====
@@ -52,8 +49,7 @@ def check_password(m):
         bot.send_message(
             m.chat.id,
             "✅ Пароль принят. Ты админ.\n\n"
-            "Отправь боту Premium-эмодзи для АФК-статуса.\n"
-            "Бот запомнит его ID.\n\n"
+            "Отправь боту Premium-эмодзи для АФК-статуса.\n\n"
             "Команды:\n"
             "/afk_on — включить АФК вручную\n"
             "/afk_off — выключить АФК\n"
@@ -64,39 +60,35 @@ def check_password(m):
         bot.send_message(m.chat.id, "❌ Неверный пароль. Попробуй ещё раз:")
 
 # ===== ПОЛУЧЕНИЕ ID ЭМОДЗИ =====
-@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text and m.entities, content_types=['text'])
+@bot.message_handler(
+    func=lambda m: m.from_user.id == ADMIN_ID 
+    and m.text 
+    and m.entities 
+    and any(e.type == 'custom_emoji' for e in m.entities),
+    content_types=['text']
+)
 def extract_emoji_id(m):
-    """Вытаскивает custom_emoji_id из сообщения с Premium-эмодзи"""
     global afk_emoji_id, afk_emoji_fallback
-    
     for entity in m.entities:
         if entity.type == 'custom_emoji':
             afk_emoji_id = entity.custom_emoji_id
-            # Пытаемся получить fallback (обычный эмодзи)
             if entity.offset + entity.length <= len(m.text):
                 afk_emoji_fallback = m.text[entity.offset:entity.offset + entity.length]
-            
             bot.send_message(
                 m.chat.id,
-                f"✅ Эмодзи-статус сохранён!\n"
-                f"ID: `{afk_emoji_id}`\n"
-                f"Fallback: {afk_emoji_fallback}",
+                f"✅ Эмодзи-статус сохранён!\nID: `{afk_emoji_id}`\nFallback: {afk_emoji_fallback}",
                 parse_mode="Markdown"
             )
             logger.info(f"Эмодзи-статус сохранён: {afk_emoji_id}")
             return
-    
-    bot.send_message(m.chat.id, "❌ Это не Premium-эмодзи. Отправь кастомный.")
 
 # ===== АФК ЛОГИКА =====
 def enter_afk():
     global afk_enabled, ADMIN_ID, afk_emoji_id
-    
     if afk_enabled:
         return
     afk_enabled = True
     logger.info("АФК ВКЛЮЧЁН")
-    
     if afk_emoji_id and ADMIN_ID:
         try:
             bot.set_user_emoji_status(
@@ -106,18 +98,15 @@ def enter_afk():
             logger.info(f"Статус установлен: {afk_emoji_id}")
         except Exception as e:
             logger.error(f"Ошибка смены статуса: {e}")
-    
     if ADMIN_ID:
-        bot.send_message(ADMIN_ID, f"🌙 АФК включён (молчал 2 часа)")
+        bot.send_message(ADMIN_ID, "🌙 АФК включён (молчал 2 часа)")
 
 def exit_afk():
     global afk_enabled, ADMIN_ID
-    
     if not afk_enabled:
         return
     afk_enabled = False
     logger.info("АФК ВЫКЛЮЧЁН")
-    
     if ADMIN_ID:
         try:
             bot.set_user_emoji_status(
@@ -127,11 +116,9 @@ def exit_afk():
             logger.info("Статус снят")
         except Exception as e:
             logger.error(f"Ошибка снятия статуса: {e}")
-        
         bot.send_message(ADMIN_ID, "☀️ АФК выключен")
 
 def afk_watcher():
-    """Проверяет неактивность (2 часа)"""
     global afk_enabled, last_activity
     while True:
         time.sleep(30)
@@ -141,7 +128,6 @@ def afk_watcher():
             enter_afk()
 
 def afk_recheck_watcher():
-    """Если после выхода писал меньше 5 мин — вернуть АФК через 10 мин"""
     global afk_enabled, last_activity
     while True:
         time.sleep(60)
@@ -183,14 +169,17 @@ def status_cmd(m):
     bot.send_message(m.chat.id, text)
 
 # ===== ОТСЛЕЖИВАНИЕ АКТИВНОСТИ =====
-@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID, content_types=['text', 'photo', 'video', 'sticker', 'document', 'voice'])
+@bot.message_handler(
+    func=lambda m: m.from_user.id == ADMIN_ID,
+    content_types=['text', 'photo', 'video', 'sticker', 'document', 'voice']
+)
 def track_activity(m):
     global last_activity
     last_activity = time.time()
     if afk_enabled:
         exit_afk()
 
-# ===== BUSINESS (если нужно) =====
+# ===== BUSINESS =====
 @bot.business_message_handler(func=lambda m: True)
 def handle_business(m):
     global business_conn_id
@@ -209,14 +198,18 @@ def health():
 
 # ===== ЗАПУСК =====
 if __name__ == "__main__":
-    # Фоновые потоки
     threading.Thread(target=afk_watcher, daemon=True).start()
     threading.Thread(target=afk_recheck_watcher, daemon=True).start()
-    
-    # Бот в фоне
-    threading.Thread(target=lambda: bot.polling(none_stop=True, interval=1), daemon=True).start()
-    
-    # Flask на порту Render
+
+    def run_bot():
+        logger.info("Запуск бота...")
+        try:
+            bot.polling(none_stop=True, interval=1)
+        except Exception as e:
+            logger.error(f"Бот упал: {e}")
+
+    threading.Thread(target=run_bot, daemon=True).start()
+
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"Запуск Flask на порту {port}")
     app.run(host="0.0.0.0", port=port)
