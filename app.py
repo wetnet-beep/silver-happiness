@@ -39,7 +39,15 @@ mute_entities = None
 waiting_mute_text = False
 waiting_back_emoji = False
 
-# ===== ФУНКЦИЯ МЕНЮ =====
+warn_text = "⚠️ Варник) {count}/{limit}"
+warn_entities = None
+warn_limit = 3
+waiting_warn_text = False
+warned_users = {}
+
+bypass_enabled = {}
+
+# ===== МЕНЮ =====
 def send_commands(chat_id):
     bot.send_message(
         chat_id,
@@ -51,16 +59,17 @@ def send_commands(chat_id):
         "/afk_off — выключить АФК вручную\n"
         "/afk_time 300 — время до АФК (30–86400 сек)\n"
         "/set_mute_text — задать текст после мута\n"
+        "/set_warn_text — задать текст варна\n"
+        "/set_warn_limit 3 — лимит варнов\n"
         "/set_back_emoji — эмодзи возврата после АФК\n"
         "/cancel — отменить ввод\n\n"
-        "<b>🎬 В бизнес-чатах (личка с собеседником):</b>\n"
-        "<code>.мут</code> — замутить навсегда\n"
-        "<code>.мут 10м</code> — на 10 минут\n"
-        "<code>.мут 1ч</code> — на 1 час\n"
-        "<code>.мут 1д</code> — на 1 день\n"
-        "<code>.анмут</code> — снять мут\n\n"
-        "<b>💡 Как задать эмодзи для АФК:</b>\n"
-        "Просто отправь боту Premium-эмодзи.",
+        "<b>🎬 В бизнес-чатах (отдельным сообщением):</b>\n"
+        "<code>мут</code> — замутить навсегда\n"
+        "<code>мут 10м</code> — на 10 минут\n"
+        "<code>анмут</code> — снять мут\n"
+        "<code>варн</code> — активировать варны\n"
+        "<code>обход</code> — вкл/выкл дублирование\n\n"
+        "<b>💡 Premium-эмодзи для АФК:</b> просто отправь боту.",
         parse_mode="HTML"
     )
 
@@ -86,14 +95,15 @@ def check_password(m):
     else:
         bot.send_message(m.chat.id, "❌ Неверный пароль. Попробуй ещё раз:")
 
-# ===== ЭМОДЗИ АФК (только когда НЕ ждём текст мута/эмодзи возврата) =====
+# ===== ЭМОДЗИ АФК =====
 @bot.message_handler(
     func=lambda m: m.from_user.id == ADMIN_ID 
     and m.text 
     and m.entities 
     and any(e.type == 'custom_emoji' for e in m.entities)
     and not waiting_mute_text
-    and not waiting_back_emoji,
+    and not waiting_back_emoji
+    and not waiting_warn_text,
     content_types=['text']
 )
 def extract_emoji_id(m):
@@ -109,7 +119,7 @@ def extract_emoji_id(m):
             afk_emoji_fallback = m.text[entity.offset:entity.offset + entity.length] if entity.offset + entity.length <= len(m.text) else "🌙"
             bot.send_message(
                 m.chat.id,
-                f"✅ Эмодзи-статус для АФК сохранён!\nID: `{afk_emoji_id}`\nFallback: {afk_emoji_fallback}",
+                f"✅ Эмодзи-статус для АФК сохранён!\nID: `{afk_emoji_id}`",
                 parse_mode="Markdown"
             )
             logger.info(f"Эмодзи АФК сохранён: {afk_emoji_id}")
@@ -122,17 +132,10 @@ def set_back_emoji_cmd(m):
     if m.from_user.id != ADMIN_ID:
         return
     waiting_back_emoji = True
-    bot.send_message(
-        m.chat.id,
-        "Отправь Premium-эмодзи, который надо возвращать после АФК.\n"
-        "Или напиши <code>clear</code>, чтобы статус просто убирался.",
-        parse_mode="HTML"
-    )
+    bot.send_message(m.chat.id, "Отправь Premium-эмодзи для возврата после АФК. Или <code>clear</code>, чтобы убирать.", parse_mode="HTML")
 
 @bot.message_handler(
-    func=lambda m: m.from_user.id == ADMIN_ID 
-    and m.text == 'clear' 
-    and waiting_back_emoji,
+    func=lambda m: m.from_user.id == ADMIN_ID and m.text == 'clear' and waiting_back_emoji,
     content_types=['text']
 )
 def clear_back_emoji(m):
@@ -155,12 +158,8 @@ def extract_back_emoji_id(m):
         if entity.type == 'custom_emoji':
             back_emoji_id = entity.custom_emoji_id
             waiting_back_emoji = False
-            bot.send_message(
-                m.chat.id,
-                f"✅ Эмодзи для возврата сохранён!\nID: `{back_emoji_id}`",
-                parse_mode="Markdown"
-            )
-            logger.info(f"Эмодзи возврата сохранён: {back_emoji_id}")
+            bot.send_message(m.chat.id, f"✅ Эмодзи возврата: `{back_emoji_id}`", parse_mode="Markdown")
+            logger.info(f"Эмодзи возврата: {back_emoji_id}")
             return
 
 # ===== ТЕКСТ МУТА =====
@@ -170,21 +169,7 @@ def set_mute_text_cmd(m):
     if m.from_user.id != ADMIN_ID:
         return
     waiting_mute_text = True
-    bot.send_message(
-        m.chat.id,
-        f"Текущий текст: {mute_text}\n\n"
-        "Отправь новый текст. Можно с Premium-эмодзи.\n"
-        "Для отмены: /cancel"
-    )
-
-@bot.message_handler(commands=['cancel'])
-def cancel_cmd(m):
-    global waiting_mute_text, waiting_back_emoji
-    if m.from_user.id != ADMIN_ID:
-        return
-    waiting_mute_text = False
-    waiting_back_emoji = False
-    bot.send_message(m.chat.id, "Отменено.")
+    bot.send_message(m.chat.id, f"Текущий текст: {mute_text}\n\nОтправь новый (можно с Premium-эмодзи).\nДля отмены: /cancel")
 
 @bot.message_handler(
     func=lambda m: m.from_user.id == ADMIN_ID and waiting_mute_text and (m.text or m.caption),
@@ -202,6 +187,68 @@ def receive_mute_text(m):
     bot.send_message(m.chat.id, f"✅ Текст мута сохранён:\n{mute_text}")
     logger.info(f"Новый текст мута: {mute_text}")
 
+# ===== ТЕКСТ ВАРНА =====
+@bot.message_handler(commands=['set_warn_text'])
+def set_warn_text_cmd(m):
+    global waiting_warn_text
+    if m.from_user.id != ADMIN_ID:
+        return
+    waiting_warn_text = True
+    bot.send_message(
+        m.chat.id,
+        f"Текущий текст варна: {warn_text}\n\n"
+        "Отправь новый текст (можно с Premium-эмодзи).\n"
+        "Используй <code>{count}</code> для номера и <code>{limit}</code> для лимита.\n"
+        "Пример: <code>⚠️ Варник) {count}/{limit}</code>\n\n"
+        "Для отмены: /cancel",
+        parse_mode="HTML"
+    )
+
+@bot.message_handler(commands=['set_warn_limit'])
+def set_warn_limit_cmd(m):
+    global warn_limit
+    if m.from_user.id != ADMIN_ID:
+        return
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.send_message(m.chat.id, f"Текущий лимит: {warn_limit}\n\nИспользование: /set_warn_limit 3")
+        return
+    try:
+        limit = int(parts[1])
+        if limit < 1 or limit > 100:
+            bot.send_message(m.chat.id, "❌ Лимит от 1 до 100.")
+            return
+        warn_limit = limit
+        bot.send_message(m.chat.id, f"✅ Лимит варнов: {warn_limit}")
+    except ValueError:
+        bot.send_message(m.chat.id, "❌ Отправь число.")
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id == ADMIN_ID and waiting_warn_text and (m.text or m.caption),
+    content_types=['text', 'photo', 'video', 'sticker', 'document', 'voice']
+)
+def receive_warn_text(m):
+    global warn_text, warn_entities, waiting_warn_text
+    if m.text:
+        warn_text = m.text
+        warn_entities = m.entities
+    elif m.caption:
+        warn_text = m.caption
+        warn_entities = m.caption_entities
+    waiting_warn_text = False
+    bot.send_message(m.chat.id, f"✅ Текст варна сохранён:\n{warn_text}")
+    logger.info(f"Новый текст варна: {warn_text}")
+
+@bot.message_handler(commands=['cancel'])
+def cancel_cmd(m):
+    global waiting_mute_text, waiting_back_emoji, waiting_warn_text
+    if m.from_user.id != ADMIN_ID:
+        return
+    waiting_mute_text = False
+    waiting_back_emoji = False
+    waiting_warn_text = False
+    bot.send_message(m.chat.id, "Отменено.")
+
 # ===== АФК =====
 def enter_afk():
     global afk_enabled, ADMIN_ID, afk_emoji_id, back_emoji_id
@@ -215,16 +262,12 @@ def enter_afk():
             chat_info = bot.get_chat(ADMIN_ID)
             if hasattr(chat_info, 'emoji_status_custom_emoji_id') and chat_info.emoji_status_custom_emoji_id:
                 back_emoji_id = chat_info.emoji_status_custom_emoji_id
-                logger.info(f"Запомнен старый статус: {back_emoji_id}")
         except Exception as e:
             logger.warning(f"Не удалось прочитать старый статус: {e}")
 
     if afk_emoji_id and ADMIN_ID:
         try:
-            bot.set_user_emoji_status(
-                user_id=ADMIN_ID,
-                emoji_status_custom_emoji_id=afk_emoji_id
-            )
+            bot.set_user_emoji_status(user_id=ADMIN_ID, emoji_status_custom_emoji_id=afk_emoji_id)
             logger.info(f"Статус установлен: {afk_emoji_id}")
         except Exception as e:
             logger.error(f"Ошибка смены статуса: {e}")
@@ -242,17 +285,9 @@ def exit_afk():
     if ADMIN_ID:
         try:
             if back_emoji_id:
-                bot.set_user_emoji_status(
-                    user_id=ADMIN_ID,
-                    emoji_status_custom_emoji_id=back_emoji_id
-                )
-                logger.info(f"Статус возвращён: {back_emoji_id}")
+                bot.set_user_emoji_status(user_id=ADMIN_ID, emoji_status_custom_emoji_id=back_emoji_id)
             else:
-                bot.set_user_emoji_status(
-                    user_id=ADMIN_ID,
-                    emoji_status_custom_emoji_id=""
-                )
-                logger.info("Статус убран")
+                bot.set_user_emoji_status(user_id=ADMIN_ID, emoji_status_custom_emoji_id="")
         except Exception as e:
             logger.error(f"Ошибка смены статуса: {e}")
         bot.send_message(ADMIN_ID, "☀️ АФК выключен")
@@ -297,56 +332,57 @@ def set_afk_time(m):
     global afk_timeout
     if m.from_user.id != ADMIN_ID:
         return
-
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        h = afk_timeout // 3600
-        mnt = (afk_timeout % 3600) // 60
-        s = afk_timeout % 60
-        bot.send_message(
-            m.chat.id,
-            f"⏱ Текущее время АФК: {afk_timeout} сек ({h} ч {mnt} мин {s} сек)\n\n"
-            "Использование: /afk_time 300 (от 30 до 86400 сек)."
-        )
+        bot.send_message(m.chat.id, f"Текущее время: {afk_timeout} сек\nИспользование: /afk_time 300")
         return
-
     try:
         seconds = int(parts[1])
         if seconds < 30 or seconds > 86400:
-            bot.send_message(m.chat.id, "❌ Время должно быть от 30 до 86400 секунд.")
+            bot.send_message(m.chat.id, "❌ От 30 до 86400 сек.")
             return
         afk_timeout = seconds
-        h = seconds // 3600
-        mnt = (seconds % 3600) // 60
-        s = seconds % 60
-        bot.send_message(m.chat.id, f"✅ Время АФК: {seconds} сек ({h} ч {mnt} мин {s} сек)")
+        bot.send_message(m.chat.id, f"✅ Время АФК: {seconds} сек")
     except ValueError:
-        bot.send_message(m.chat.id, "❌ Отправь число. Например: /afk_time 300")
+        bot.send_message(m.chat.id, "❌ Отправь число.")
 
 @bot.message_handler(commands=['status'])
 def status_cmd(m):
     if m.from_user.id != ADMIN_ID:
         return
     idle = int(time.time() - last_activity)
-    mins = idle // 60
     text = (
         f"📊 Статус:\n"
         f"• АФК: {'ВКЛ' if afk_enabled else 'ВЫКЛ'}\n"
-        f"• Молчание: {mins} мин\n"
+        f"• Молчание: {idle // 60} мин\n"
         f"• Время АФК: {afk_timeout} сек\n"
         f"• Эмодзи АФК: {afk_emoji_id or 'не задан'}\n"
         f"• Эмодзи возврата: {back_emoji_id or 'убирается'}\n"
         f"• Текст мута: {mute_text}\n"
+        f"• Текст варна: {warn_text}\n"
+        f"• Лимит варнов: {warn_limit}\n"
         f"• Замучено чатов: {len(muted_users)}"
     )
     bot.send_message(m.chat.id, text)
 
-# ===== МУТ И АНМУТ =====
+# ===== ХЕЛПЕР: ПРОВЕРКА ЧТО ЭТО КОМАНДА =====
+def is_command(text, cmd):
+    """Проверяет, что текст начинается с команды как отдельного слова"""
+    if not text:
+        return False
+    # Убираем лишние пробелы
+    stripped = text.strip()
+    # Команда должна быть первым словом
+    parts = stripped.split(maxsplit=1)
+    if not parts:
+        return False
+    return parts[0].lower() == cmd.lower()
+
+# ===== МУТ / АНМУТ / ВАРН / ОБХОД =====
 @bot.business_message_handler(
-    func=lambda m: m.text and m.from_user.id == ADMIN_ID and re.match(r'^\.?\s*мут\b', m.text, re.IGNORECASE)
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "мут")
 )
 def handle_mute(m):
-    global mute_text, mute_entities
     cid = m.chat.id
     conn_id = m.business_connection_id
     text = m.text.strip()
@@ -354,7 +390,7 @@ def handle_mute(m):
     try:
         bot.delete_business_messages(conn_id, [m.message_id])
     except Exception as e:
-        logger.error(f"Ошибка удаления команды: {e}")
+        logger.error(f"Ошибка удаления: {e}")
 
     parts = text.split(maxsplit=1)
     duration = None
@@ -377,44 +413,36 @@ def handle_mute(m):
 
     if not target_id:
         try:
-            bot.send_message(cid, "❌ Не знаю, кого мутить. Ответь на сообщение или дождись, пока собеседник напишет.", business_connection_id=conn_id)
+            bot.send_message(cid, "❌ Не знаю, кого мутить.", business_connection_id=conn_id)
         except:
             pass
         return
 
     until = time.time() + duration if duration else None
     muted_users[cid] = {"user_id": target_id, "until": until, "conn_id": conn_id}
-    logger.info(f"Замучен {target_id} в чате {cid}, до {until}")
+    logger.info(f"Замучен {target_id} в {cid}")
 
     try:
-        bot.send_message(
-            cid,
-            mute_text,
-            entities=mute_entities,
-            business_connection_id=conn_id
-        )
+        bot.send_message(cid, mute_text, entities=mute_entities, business_connection_id=conn_id)
     except Exception as e:
-        logger.error(f"Ошибка отправки текста мута с entities: {e}")
+        logger.error(f"Ошибка: {e}")
         try:
             bot.send_message(cid, mute_text, business_connection_id=conn_id)
-        except Exception as e2:
-            logger.error(f"Ошибка отправки текста мута: {e2}")
+        except:
+            pass
 
 @bot.business_message_handler(
-    func=lambda m: m.text and m.from_user.id == ADMIN_ID and re.match(r'^\.?\s*анмут\b', m.text, re.IGNORECASE)
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "анмут")
 )
 def handle_unmute(m):
     cid = m.chat.id
     conn_id = m.business_connection_id
-
     try:
         bot.delete_business_messages(conn_id, [m.message_id])
     except:
         pass
-
     if cid in muted_users:
         del muted_users[cid]
-        logger.info(f"Мут снят в чате {cid}")
         try:
             bot.send_message(cid, "🔓 Мут снят", business_connection_id=conn_id)
         except:
@@ -422,6 +450,60 @@ def handle_unmute(m):
     else:
         try:
             bot.send_message(cid, "❌ Нет активного мута", business_connection_id=conn_id)
+        except:
+            pass
+
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "варн")
+)
+def handle_warn(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    target_id = None
+    if m.reply_to_message and m.reply_to_message.from_user:
+        target_id = m.reply_to_message.from_user.id
+    else:
+        target_id = chat_partners.get(cid)
+
+    if not target_id:
+        try:
+            bot.send_message(cid, "❌ Не знаю, кому варн.", business_connection_id=conn_id)
+        except:
+            pass
+        return
+
+    warned_users[cid] = {"user_id": target_id, "count": 0}
+    try:
+        bot.send_message(cid, f"⚠️ Варн активирован. Лимит: {warn_limit}", business_connection_id=conn_id)
+    except:
+        pass
+
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "обход")
+)
+def handle_bypass(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    if bypass_enabled.get(cid):
+        bypass_enabled[cid] = False
+        try:
+            bot.send_message(cid, "🛑 Обход выключен", business_connection_id=conn_id)
+        except:
+            pass
+    else:
+        bypass_enabled[cid] = True
+        try:
+            bot.send_message(cid, "🔄 Обход включён", business_connection_id=conn_id)
         except:
             pass
 
@@ -434,13 +516,12 @@ def track_activity(m):
     global last_activity, afk_enabled
     last_activity = time.time()
     if afk_enabled:
-        logger.info("Активность админа — выхожу из АФК")
         exit_afk()
 
 # ===== BUSINESS =====
 @bot.business_message_handler(func=lambda m: True)
 def handle_business(m):
-    global business_conn_id, muted_users, chat_partners
+    global business_conn_id, muted_users, chat_partners, warned_users
 
     business_conn_id = m.business_connection_id
     cid = m.chat.id
@@ -449,20 +530,66 @@ def handle_business(m):
     if ADMIN_ID and uid != ADMIN_ID:
         if cid not in chat_partners:
             chat_partners[cid] = uid
-            logger.info(f"Запомнен собеседник {cid}: {uid}")
 
+    # Мут
     if cid in muted_users:
         mute_info = muted_users[cid]
         if mute_info["until"] and time.time() > mute_info["until"]:
             del muted_users[cid]
-            logger.info(f"Мут истёк в {cid}")
         elif mute_info["user_id"] == uid:
             try:
                 bot.delete_business_messages(m.business_connection_id, [m.message_id])
-                logger.info(f"Удалено сообщение замученного {uid}")
-            except Exception as e:
-                logger.error(f"Ошибка удаления: {e}")
+            except:
+                pass
             return
+
+    # Варны
+    if cid in warned_users:
+        warn_info = warned_users[cid]
+        if warn_info["user_id"] == uid and uid != ADMIN_ID:
+            warn_info["count"] += 1
+            logger.info(f"Варн {warn_info['count']}/{warn_limit} для {uid}")
+
+            if warn_info["count"] >= warn_limit:
+                muted_users[cid] = {"user_id": uid, "until": None, "conn_id": m.business_connection_id}
+                del warned_users[cid]
+                try:
+                    bot.send_message(cid, "🚫 Лимит варнов достигнут. Мут навсегда.", business_connection_id=m.business_connection_id)
+                except:
+                    pass
+            else:
+                text = warn_text.replace("{count}", str(warn_info["count"])).replace("{limit}", str(warn_limit))
+                try:
+                    bot.send_message(cid, text, entities=warn_entities, business_connection_id=m.business_connection_id)
+                except Exception as e:
+                    logger.error(f"Ошибка варна: {e}")
+                    try:
+                        bot.send_message(cid, text, business_connection_id=m.business_connection_id)
+                    except:
+                        pass
+
+    # Обход
+    if ADMIN_ID and uid == ADMIN_ID and bypass_enabled.get(cid):
+        try:
+            bot.delete_business_messages(m.business_connection_id, [m.message_id])
+        except:
+            pass
+        try:
+            if m.text:
+                bot.send_message(cid, m.text, entities=m.entities, business_connection_id=m.business_connection_id)
+            elif m.photo:
+                bot.send_photo(cid, m.photo[-1].file_id, caption=m.caption, business_connection_id=m.business_connection_id)
+            elif m.video:
+                bot.send_video(cid, m.video.file_id, caption=m.caption, business_connection_id=m.business_connection_id)
+            elif m.sticker:
+                bot.send_sticker(cid, m.sticker.file_id, business_connection_id=m.business_connection_id)
+            elif m.document:
+                bot.send_document(cid, m.document.file_id, business_connection_id=m.business_connection_id)
+            elif m.voice:
+                bot.send_voice(cid, m.voice.file_id, business_connection_id=m.business_connection_id)
+        except Exception as e:
+            logger.error(f"Ошибка обхода: {e}")
+        return
 
     if ADMIN_ID and uid == ADMIN_ID:
         track_activity(m)
