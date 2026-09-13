@@ -47,6 +47,9 @@ warned_users = {}
 
 bypass_enabled = {}
 
+saved_messages = []
+waiting_save = False
+
 # ===== МЕНЮ =====
 def send_commands(chat_id):
     bot.send_message(
@@ -62,13 +65,15 @@ def send_commands(chat_id):
         "/set_warn_text — задать текст варна\n"
         "/set_warn_limit 3 — лимит варнов\n"
         "/set_back_emoji — эмодзи возврата после АФК\n"
+        "сейф — сохранить медиа (отправь боту)\n"
         "/cancel — отменить ввод\n\n"
         "<b>🎬 В бизнес-чатах (отдельным сообщением):</b>\n"
         "<code>мут</code> — замутить навсегда\n"
         "<code>мут 10м</code> — на 10 минут\n"
         "<code>анмут</code> — снять мут\n"
         "<code>варн</code> — активировать варны\n"
-        "<code>обход</code> — вкл/выкл дублирование\n\n"
+        "<code>обход</code> — вкл/выкл дублирование\n"
+        "<code>сейф</code> — ответом на медиа → переслать в ЛС\n\n"
         "<b>💡 Premium-эмодзи для АФК:</b> просто отправь боту.",
         parse_mode="HTML"
     )
@@ -103,7 +108,8 @@ def check_password(m):
     and any(e.type == 'custom_emoji' for e in m.entities)
     and not waiting_mute_text
     and not waiting_back_emoji
-    and not waiting_warn_text,
+    and not waiting_warn_text
+    and not waiting_save,
     content_types=['text']
 )
 def extract_emoji_id(m):
@@ -241,13 +247,47 @@ def receive_warn_text(m):
 
 @bot.message_handler(commands=['cancel'])
 def cancel_cmd(m):
-    global waiting_mute_text, waiting_back_emoji, waiting_warn_text
+    global waiting_mute_text, waiting_back_emoji, waiting_warn_text, waiting_save
     if m.from_user.id != ADMIN_ID:
         return
     waiting_mute_text = False
     waiting_back_emoji = False
     waiting_warn_text = False
+    waiting_save = False
     bot.send_message(m.chat.id, "Отменено.")
+
+# ===== СЕЙФ В ЛИЧКЕ С БОТОМ =====
+@bot.message_handler(
+    func=lambda m: m.from_user.id == ADMIN_ID and m.text and m.text.strip().lower() == "сейф"
+)
+def save_cmd(m):
+    global waiting_save
+    waiting_save = True
+    bot.send_message(m.chat.id, "Отправь медиа (фото, видео, голосовое, документ, стикер) — сохраню.")
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id == ADMIN_ID and waiting_save,
+    content_types=['photo', 'video', 'document', 'voice', 'sticker', 'audio']
+)
+def save_media(m):
+    global saved_messages, waiting_save
+    
+    if m.photo:
+        saved_messages.append({'type': 'photo', 'data': m.photo[-1].file_id})
+    elif m.video:
+        saved_messages.append({'type': 'video', 'data': m.video.file_id})
+    elif m.document:
+        saved_messages.append({'type': 'document', 'data': m.document.file_id})
+    elif m.voice:
+        saved_messages.append({'type': 'voice', 'data': m.voice.file_id})
+    elif m.sticker:
+        saved_messages.append({'type': 'sticker', 'data': m.sticker.file_id})
+    elif m.audio:
+        saved_messages.append({'type': 'audio', 'data': m.audio.file_id})
+    
+    waiting_save = False
+    bot.send_message(m.chat.id, f"✅ Сохранено. Всего: {len(saved_messages)}")
+    logger.info(f"Сохранено медиа: {m.content_type}")
 
 # ===== АФК =====
 def enter_afk():
@@ -361,24 +401,21 @@ def status_cmd(m):
         f"• Текст мута: {mute_text}\n"
         f"• Текст варна: {warn_text}\n"
         f"• Лимит варнов: {warn_limit}\n"
-        f"• Замучено чатов: {len(muted_users)}"
+        f"• Замучено чатов: {len(muted_users)}\n"
+        f"• Сохранено медиа: {len(saved_messages)}"
     )
     bot.send_message(m.chat.id, text)
 
-# ===== ХЕЛПЕР: ПРОВЕРКА ЧТО ЭТО КОМАНДА =====
+# ===== ХЕЛПЕР =====
 def is_command(text, cmd):
-    """Проверяет, что текст начинается с команды как отдельного слова"""
     if not text:
         return False
-    # Убираем лишние пробелы
-    stripped = text.strip()
-    # Команда должна быть первым словом
-    parts = stripped.split(maxsplit=1)
+    parts = text.strip().split(maxsplit=1)
     if not parts:
         return False
     return parts[0].lower() == cmd.lower()
 
-# ===== МУТ / АНМУТ / ВАРН / ОБХОД =====
+# ===== МУТ =====
 @bot.business_message_handler(
     func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "мут")
 )
@@ -422,15 +459,53 @@ def handle_mute(m):
     muted_users[cid] = {"user_id": target_id, "until": until, "conn_id": conn_id}
     logger.info(f"Замучен {target_id} в {cid}")
 
+    markup = types.InlineKeyboardMarkup()
+    btn = types.InlineKeyboardButton(
+        text="Размут",
+        callback_data=f"unmute_{cid}",
+        style="success"
+    )
+    markup.add(btn)
+
     try:
-        bot.send_message(cid, mute_text, entities=mute_entities, business_connection_id=conn_id)
+        bot.send_message(
+            cid,
+            mute_text,
+            entities=mute_entities,
+            reply_markup=markup,
+            business_connection_id=conn_id
+        )
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         try:
-            bot.send_message(cid, mute_text, business_connection_id=conn_id)
+            bot.send_message(cid, mute_text, reply_markup=markup, business_connection_id=conn_id)
         except:
             pass
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("unmute_"))
+def callback_unmute(call):
+    cid = int(call.data.split("_")[1])
+
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Только админ может размутить.")
+        return
+
+    if cid in muted_users:
+        del muted_users[cid]
+        logger.info(f"Мут снят через кнопку в чате {cid}")
+        bot.answer_callback_query(call.id, "🔓 Мут снят")
+        try:
+            bot.edit_message_reply_markup(
+                chat_id=cid,
+                message_id=call.message.message_id,
+                reply_markup=None
+            )
+        except Exception as e:
+            logger.error(f"Ошибка редактирования: {e}")
+    else:
+        bot.answer_callback_query(call.id, "❌ Мут уже снят")
+
+# ===== АНМУТ =====
 @bot.business_message_handler(
     func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "анмут")
 )
@@ -453,6 +528,7 @@ def handle_unmute(m):
         except:
             pass
 
+# ===== ВАРН =====
 @bot.business_message_handler(
     func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "варн")
 )
@@ -483,6 +559,7 @@ def handle_warn(m):
     except:
         pass
 
+# ===== ОБХОД =====
 @bot.business_message_handler(
     func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "обход")
 )
@@ -506,6 +583,55 @@ def handle_bypass(m):
             bot.send_message(cid, "🔄 Обход включён", business_connection_id=conn_id)
         except:
             pass
+
+# ===== СЕЙФ В БИЗНЕС-ЧАТЕ =====
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "сейф")
+)
+def handle_save_from_reply(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    if not m.reply_to_message:
+        try:
+            bot.send_message(cid, "❌ Ответь на медиа словом «сейф».", business_connection_id=conn_id)
+        except:
+            pass
+        return
+
+    replied = m.reply_to_message
+
+    try:
+        bot.forward_message(
+            chat_id=ADMIN_ID,
+            from_chat_id=cid,
+            message_id=replied.message_id
+        )
+        logger.info(f"Медиа переслано в ЛС админа из чата {cid}")
+    except Exception as e:
+        logger.error(f"Ошибка пересылки: {e}")
+        try:
+            if replied.photo:
+                bot.send_photo(ADMIN_ID, replied.photo[-1].file_id, caption=replied.caption or "")
+            elif replied.video:
+                bot.send_video(ADMIN_ID, replied.video.file_id, caption=replied.caption or "")
+            elif replied.document:
+                bot.send_document(ADMIN_ID, replied.document.file_id, caption=replied.caption or "")
+            elif replied.voice:
+                bot.send_voice(ADMIN_ID, replied.voice.file_id)
+            elif replied.sticker:
+                bot.send_sticker(ADMIN_ID, replied.sticker.file_id)
+            elif replied.audio:
+                bot.send_audio(ADMIN_ID, replied.audio.file_id)
+            else:
+                bot.send_message(ADMIN_ID, "❌ Это не поддерживаемое медиа.")
+        except Exception as e2:
+            logger.error(f"Ошибка fallback: {e2}")
 
 # ===== АКТИВНОСТЬ =====
 @bot.message_handler(
@@ -606,6 +732,20 @@ def health():
 # ===== ЗАПУСК =====
 if __name__ == "__main__":
     threading.Thread(target=afk_watcher, daemon=True).start()
+    threading.Thread(target=afk_recheck_watcher, daemon=True).start()
+
+    def run_bot():
+        logger.info("Запуск бота...")
+        try:
+            bot.polling(none_stop=True, interval=1)
+        except Exception as e:
+            logger.error(f"Бот упал: {e}")
+
+    threading.Thread(target=run_bot, daemon=True).start()
+
+    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"Запуск Flask на порту {port}")
+    app.run(host="0.0.0.0", port=port)(target=afk_watcher, daemon=True).start()
     threading.Thread(target=afk_recheck_watcher, daemon=True).start()
 
     def run_bot():
