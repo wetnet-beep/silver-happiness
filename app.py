@@ -48,7 +48,10 @@ waiting_warn_text = False
 warned_users = {}
 
 bypass_enabled = {}
+bypass_msg_ids = {}  # {cid: msg_id} — сообщение о включении обхода
+
 echo_enabled = {}
+echo_msg_ids = {}  # {cid: msg_id} — сообщение о включении эхо
 
 rps_games = {}
 rek_games = {}
@@ -528,6 +531,7 @@ def handle_mute(m):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("unmute_"))
 def callback_unmute(call):
     cid = int(call.data.split("_")[1])
+    conn_id = business_conn_id
 
     if call.from_user.id != ADMIN_ID:
         bot.answer_callback_query(call.id, "❌ Только админ.")
@@ -543,13 +547,19 @@ def callback_unmute(call):
                 chat_id=cid,
                 message_id=call.message.message_id,
                 text=new_text,
-                parse_mode="HTML"
+                parse_mode="HTML",
+                business_connection_id=conn_id
             )
         except Exception as e:
             logger.error(f"Ошибка редактирования: {e}")
 
         try:
-            bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
+            bot.edit_message_reply_markup(
+                chat_id=cid,
+                message_id=call.message.message_id,
+                reply_markup=None,
+                business_connection_id=conn_id
+            )
         except:
             pass
     else:
@@ -624,11 +634,13 @@ def handle_bypass(m):
 
     if bypass_enabled.get(cid):
         bypass_enabled[cid] = False
-        try:
-            text = f'Обход выключен <tg-emoji emoji-id="{BYPASS_EMOJI_ID}">🔄</tg-emoji>'
-            bot.send_message(cid, text, parse_mode="HTML", business_connection_id=conn_id)
-        except:
-            pass
+        # Удаляем сообщение о включении
+        if cid in bypass_msg_ids:
+            try:
+                bot.delete_business_messages(conn_id, [bypass_msg_ids[cid]])
+            except:
+                pass
+            del bypass_msg_ids[cid]
     else:
         bypass_enabled[cid] = True
         markup = types.InlineKeyboardMarkup()
@@ -640,13 +652,15 @@ def handle_bypass(m):
         markup.add(btn)
         try:
             text = f'Обход включён <tg-emoji emoji-id="{BYPASS_EMOJI_ID}">🔄</tg-emoji>'
-            bot.send_message(cid, text, parse_mode="HTML", reply_markup=markup, business_connection_id=conn_id)
+            msg = bot.send_message(cid, text, parse_mode="HTML", reply_markup=markup, business_connection_id=conn_id)
+            bypass_msg_ids[cid] = msg.message_id
         except:
             pass
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("bypass_off_"))
 def callback_bypass_off(call):
     cid = int(call.data.split("_")[2])
+    conn_id = business_conn_id
 
     if call.from_user.id != ADMIN_ID:
         bot.answer_callback_query(call.id, "❌ Только админ.")
@@ -655,21 +669,12 @@ def callback_bypass_off(call):
     bypass_enabled[cid] = False
     bot.answer_callback_query(call.id, "🛑 Обход выключен")
 
-    try:
-        new_text = f'Обход выключен <tg-emoji emoji-id="{BYPASS_EMOJI_ID}">🔄</tg-emoji>'
-        bot.edit_message_text(
-            chat_id=cid,
-            message_id=call.message.message_id,
-            text=new_text,
-            parse_mode="HTML"
-        )
-    except:
-        pass
-
-    try:
-        bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
-    except:
-        pass
+    if cid in bypass_msg_ids:
+        try:
+            bot.delete_business_messages(conn_id, [bypass_msg_ids[cid]])
+        except:
+            pass
+        del bypass_msg_ids[cid]
 
 # ===== ЭХО =====
 @bot.business_message_handler(
@@ -685,11 +690,13 @@ def handle_echo(m):
 
     if echo_enabled.get(cid):
         echo_enabled[cid] = False
-        try:
-            text = f'Эхо выключено <tg-emoji emoji-id="{ECHO_EMOJI_ID}">🔇</tg-emoji>'
-            bot.send_message(cid, text, parse_mode="HTML", business_connection_id=conn_id)
-        except:
-            pass
+        # Удаляем сообщение о включении
+        if cid in echo_msg_ids:
+            try:
+                bot.delete_business_messages(conn_id, [echo_msg_ids[cid]])
+            except:
+                pass
+            del echo_msg_ids[cid]
     else:
         echo_enabled[cid] = True
         markup = types.InlineKeyboardMarkup()
@@ -701,13 +708,15 @@ def handle_echo(m):
         markup.add(btn)
         try:
             text = f'Эхо включено <tg-emoji emoji-id="{ECHO_EMOJI_ID}">🔊</tg-emoji>'
-            bot.send_message(cid, text, parse_mode="HTML", reply_markup=markup, business_connection_id=conn_id)
+            msg = bot.send_message(cid, text, parse_mode="HTML", reply_markup=markup, business_connection_id=conn_id)
+            echo_msg_ids[cid] = msg.message_id
         except:
             pass
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("echo_off_"))
 def callback_echo_off(call):
     cid = int(call.data.split("_")[2])
+    conn_id = business_conn_id
 
     if call.from_user.id != ADMIN_ID:
         bot.answer_callback_query(call.id, "❌ Только админ.")
@@ -716,21 +725,12 @@ def callback_echo_off(call):
     echo_enabled[cid] = False
     bot.answer_callback_query(call.id, "🛑 Эхо выключено")
 
-    try:
-        new_text = f'Эхо выключено <tg-emoji emoji-id="{ECHO_EMOJI_ID}">🔇</tg-emoji>'
-        bot.edit_message_text(
-            chat_id=cid,
-            message_id=call.message.message_id,
-            text=new_text,
-            parse_mode="HTML"
-        )
-    except:
-        pass
-
-    try:
-        bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
-    except:
-        pass
+    if cid in echo_msg_ids:
+        try:
+            bot.delete_business_messages(conn_id, [echo_msg_ids[cid]])
+        except:
+            pass
+        del echo_msg_ids[cid]
 
 # ===== СПАМ =====
 @bot.business_message_handler(
@@ -867,7 +867,12 @@ def handle_rek(m):
     )
     markup.add(btn)
 
-    rek_games[cid] = {"winner": None, "admin_id": ADMIN_ID, "admin_name": ADMIN_NAME}
+    rek_games[cid] = {
+        "winner": None,
+        "admin_id": ADMIN_ID,
+        "admin_name": ADMIN_NAME,
+        "conn_id": conn_id
+    }
 
     try:
         bot.edit_message_text(
@@ -895,6 +900,7 @@ def callback_rek(call):
 
     uid = call.from_user.id
     game["winner"] = uid
+    conn_id = game.get("conn_id")
 
     bot.answer_callback_query(call.id, "⚡ Первый!")
 
@@ -907,12 +913,23 @@ def callback_rek(call):
         bot.edit_message_text(
             f"🏆 {name} победил!",
             chat_id=cid,
-            message_id=call.message.message_id
+            message_id=call.message.message_id,
+            business_connection_id=conn_id
         )
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"Ошибка редактирования рек: {e}")
+        try:
+            bot.send_message(cid, f"🏆 {name} победил!", business_connection_id=conn_id)
+        except:
+            pass
+
     try:
-        bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
+        bot.edit_message_reply_markup(
+            chat_id=cid,
+            message_id=call.message.message_id,
+            reply_markup=None,
+            business_connection_id=conn_id
+        )
     except:
         pass
 
@@ -945,7 +962,8 @@ def handle_rps(m):
         "partner_name": chat_partners[cid]["name"],
         "admin_choice": None,
         "partner_choice": None,
-        "msg_id": None
+        "msg_id": None,
+        "conn_id": conn_id
     }
 
     markup = types.InlineKeyboardMarkup(row_width=3)
@@ -979,6 +997,7 @@ def callback_rps(call):
 
     game = rps_games[cid]
     uid = call.from_user.id
+    conn_id = game.get("conn_id")
 
     if stage == "admin":
         if uid != game["admin_id"]:
@@ -1002,19 +1021,12 @@ def callback_rps(call):
                 f"🎮 РПС: ход {game['partner_name']}",
                 chat_id=cid,
                 message_id=call.message.message_id,
-                reply_markup=markup
+                reply_markup=markup,
+                business_connection_id=conn_id
             )
         except Exception as e:
             logger.error(f"Ошибка РПС admin→partner: {e}")
-            try:
-                bot.send_message(
-                    cid,
-                    f"🎮 РПС: ход {game['partner_name']}",
-                    reply_markup=markup,
-                    business_connection_id=game.get("conn_id")
-                )
-            except:
-                pass
+
         bot.answer_callback_query(call.id, f"✅ Ты выбрал: {choice}")
 
     elif stage == "partner":
@@ -1053,12 +1065,18 @@ def callback_rps(call):
             bot.edit_message_text(
                 f"{text}\n\n{admin_c} vs {partner_c}",
                 chat_id=cid,
-                message_id=call.message.message_id
+                message_id=call.message.message_id,
+                business_connection_id=conn_id
             )
         except:
             pass
         try:
-            bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
+            bot.edit_message_reply_markup(
+                chat_id=cid,
+                message_id=call.message.message_id,
+                reply_markup=None,
+                business_connection_id=conn_id
+            )
         except:
             pass
 
