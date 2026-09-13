@@ -4,6 +4,7 @@ import threading
 import logging
 import os
 import re
+import random
 from telebot import types
 
 # ===== НАСТРОЙКИ =====
@@ -33,7 +34,7 @@ afk_timeout = 2 * 60 * 60
 business_conn_id = None
 
 muted_users = {}
-chat_partners = {}
+chat_partners = {}  # {chat_id: {"id": ..., "name": ...}}
 mute_text = "🚫 Пользователь замучен"
 mute_entities = None
 waiting_mute_text = False
@@ -46,44 +47,83 @@ waiting_warn_text = False
 warned_users = {}
 
 bypass_enabled = {}
+echo_enabled = {}
 
-saved_messages = []
+rps_games = {}
+rek_games = {}
+
 waiting_save = False
 
-# ===== МЕНЮ =====
-def send_commands(chat_id):
-    bot.send_message(
-        chat_id,
-        "<b>📋 Список команд:</b>\n\n"
-        "<b>⚙️ Настройки (в личке с ботом):</b>\n"
-        "/start — показать это меню\n"
-        "/status — статус бота\n"
-        "/afk_on — включить АФК вручную\n"
-        "/afk_off — выключить АФК вручную\n"
-        "/afk_time 300 — время до АФК (30–86400 сек)\n"
-        "/set_mute_text — задать текст после мута\n"
-        "/set_warn_text — задать текст варна\n"
-        "/set_warn_limit 3 — лимит варнов\n"
-        "/set_back_emoji — эмодзи возврата после АФК\n"
-        "сейф — сохранить медиа (отправь боту)\n"
-        "/cancel — отменить ввод\n\n"
-        "<b>🎬 В бизнес-чатах (отдельным сообщением):</b>\n"
-        "<code>мут</code> — замутить навсегда\n"
-        "<code>мут 10м</code> — на 10 минут\n"
-        "<code>анмут</code> — снять мут\n"
-        "<code>варн</code> — активировать варны\n"
-        "<code>обход</code> — вкл/выкл дублирование\n"
-        "<code>сейф</code> — ответом на медиа → переслать в ЛС\n\n"
-        "<b>💡 Premium-эмодзи для АФК:</b> просто отправь боту.",
-        parse_mode="HTML"
+UNMUTE_EMOJI_ID = "5386436816557601037"
+BYPASS_EMOJI_ID = "5841243255856960314"
+HELLO_EMOJI_ID = "5386436816557601037"
+
+# ===== СПИСОК КОМАНД =====
+COMMANDS_LIST = """<b>📋 Список команд</b>
+
+<b>⚙️ Настройки (в личке):</b>
+<code>/start</code> — приветствие
+<code>/status</code> — статус бота
+<code>/afk_on</code> — вкл АФК
+<code>/afk_off</code> — выкл АФК
+<code>/afk_time 300</code> — время АФК (30–86400 сек)
+<code>/set_mute_text</code> — текст после мута
+<code>/set_warn_text</code> — текст варна
+<code>/set_warn_limit 3</code> — лимит варнов
+<code>/set_back_emoji</code> — эмодзи возврата
+<code>сейф</code> — сохранить медиа
+<code>/cancel</code> — отменить ввод
+
+<b>🎬 В бизнес-чатах:</b>
+<code>мут</code> — замутить навсегда
+<code>мут 10м</code> — замутить на 10 минут
+<code>анмут</code> — снять мут
+<code>варн</code> — активировать варны
+<code>обход</code> — вкл/выкл дублирование
+<code>эхо</code> — повторять за собеседником
+<code>сейф</code> — ответом на медиа → в ЛС
+<code>спам слово 5</code> — спам (по умолч. 15, макс 30)
+<code>аним текст</code> — печатает по буквам
+<code>шар вопрос</code> — магический шар
+<code>рек</code> — игра на реакцию
+<code>рпс</code> — камень-ножницы-бумага
+<code>монетка</code> — подбросить монетку
+
+<b>💡 Premium-эмодзи для АФК:</b> просто отправь боту."""
+
+# ===== ПРИВЕТСТВИЕ =====
+def send_hello(chat_id):
+    markup = types.InlineKeyboardMarkup()
+    btn = types.InlineKeyboardButton(
+        text="📋 Список команд",
+        callback_data="show_commands",
+        style="primary"
     )
+    markup.add(btn)
+
+    text = f'привет хозяин!<tg-emoji emoji-id="{HELLO_EMOJI_ID}">👋</tg-emoji>'
+
+    try:
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Ошибка приветствия: {e}")
+        bot.send_message(chat_id, "привет хозяин!", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "show_commands")
+def callback_show_commands(call):
+    try:
+        bot.send_message(call.message.chat.id, COMMANDS_LIST, parse_mode="HTML")
+        bot.answer_callback_query(call.id, "📋 Отправлено")
+    except Exception as e:
+        logger.error(f"Ошибка команд: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка")
 
 # ===== АВТОРИЗАЦИЯ =====
 @bot.message_handler(commands=['start'])
 def start_cmd(m):
     uid = m.from_user.id
     if user_state.get(uid) == 'authorized':
-        send_commands(uid)
+        send_hello(uid)
         return
     user_state[uid] = 'awaiting_password'
     bot.send_message(uid, "Введите пароль:")
@@ -94,8 +134,8 @@ def check_password(m):
     if m.text == PASSWORD:
         user_state[m.from_user.id] = 'authorized'
         ADMIN_ID = m.from_user.id
-        bot.send_message(m.chat.id, "✅ Пароль принят. Ты админ.")
-        send_commands(m.chat.id)
+        bot.send_message(m.chat.id, "✅ Пароль принят.")
+        send_hello(m.chat.id)
         logger.info(f"Админ авторизован: {m.from_user.id}")
     else:
         bot.send_message(m.chat.id, "❌ Неверный пароль. Попробуй ещё раз:")
@@ -108,8 +148,7 @@ def check_password(m):
     and any(e.type == 'custom_emoji' for e in m.entities)
     and not waiting_mute_text
     and not waiting_back_emoji
-    and not waiting_warn_text
-    and not waiting_save,
+    and not waiting_warn_text,
     content_types=['text']
 )
 def extract_emoji_id(m):
@@ -128,7 +167,6 @@ def extract_emoji_id(m):
                 f"✅ Эмодзи-статус для АФК сохранён!\nID: `{afk_emoji_id}`",
                 parse_mode="Markdown"
             )
-            logger.info(f"Эмодзи АФК сохранён: {afk_emoji_id}")
             return
 
 # ===== ЭМОДЗИ ВОЗВРАТА =====
@@ -138,7 +176,7 @@ def set_back_emoji_cmd(m):
     if m.from_user.id != ADMIN_ID:
         return
     waiting_back_emoji = True
-    bot.send_message(m.chat.id, "Отправь Premium-эмодзи для возврата после АФК. Или <code>clear</code>, чтобы убирать.", parse_mode="HTML")
+    bot.send_message(m.chat.id, "Отправь Premium-эмодзи для возврата. Или <code>clear</code>.", parse_mode="HTML")
 
 @bot.message_handler(
     func=lambda m: m.from_user.id == ADMIN_ID and m.text == 'clear' and waiting_back_emoji,
@@ -165,7 +203,6 @@ def extract_back_emoji_id(m):
             back_emoji_id = entity.custom_emoji_id
             waiting_back_emoji = False
             bot.send_message(m.chat.id, f"✅ Эмодзи возврата: `{back_emoji_id}`", parse_mode="Markdown")
-            logger.info(f"Эмодзи возврата: {back_emoji_id}")
             return
 
 # ===== ТЕКСТ МУТА =====
@@ -175,7 +212,7 @@ def set_mute_text_cmd(m):
     if m.from_user.id != ADMIN_ID:
         return
     waiting_mute_text = True
-    bot.send_message(m.chat.id, f"Текущий текст: {mute_text}\n\nОтправь новый (можно с Premium-эмодзи).\nДля отмены: /cancel")
+    bot.send_message(m.chat.id, f"Текущий текст: {mute_text}\n\nОтправь новый. /cancel — отмена.")
 
 @bot.message_handler(
     func=lambda m: m.from_user.id == ADMIN_ID and waiting_mute_text and (m.text or m.caption),
@@ -191,7 +228,6 @@ def receive_mute_text(m):
         mute_entities = m.caption_entities
     waiting_mute_text = False
     bot.send_message(m.chat.id, f"✅ Текст мута сохранён:\n{mute_text}")
-    logger.info(f"Новый текст мута: {mute_text}")
 
 # ===== ТЕКСТ ВАРНА =====
 @bot.message_handler(commands=['set_warn_text'])
@@ -202,11 +238,8 @@ def set_warn_text_cmd(m):
     waiting_warn_text = True
     bot.send_message(
         m.chat.id,
-        f"Текущий текст варна: {warn_text}\n\n"
-        "Отправь новый текст (можно с Premium-эмодзи).\n"
-        "Используй <code>{count}</code> для номера и <code>{limit}</code> для лимита.\n"
-        "Пример: <code>⚠️ Варник) {count}/{limit}</code>\n\n"
-        "Для отмены: /cancel",
+        f"Текущий текст: {warn_text}\n\n"
+        "Используй <code>{count}</code> и <code>{limit}</code>.",
         parse_mode="HTML"
     )
 
@@ -217,12 +250,12 @@ def set_warn_limit_cmd(m):
         return
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.send_message(m.chat.id, f"Текущий лимит: {warn_limit}\n\nИспользование: /set_warn_limit 3")
+        bot.send_message(m.chat.id, f"Текущий лимит: {warn_limit}\n/set_warn_limit 3")
         return
     try:
         limit = int(parts[1])
         if limit < 1 or limit > 100:
-            bot.send_message(m.chat.id, "❌ Лимит от 1 до 100.")
+            bot.send_message(m.chat.id, "❌ От 1 до 100.")
             return
         warn_limit = limit
         bot.send_message(m.chat.id, f"✅ Лимит варнов: {warn_limit}")
@@ -243,7 +276,6 @@ def receive_warn_text(m):
         warn_entities = m.caption_entities
     waiting_warn_text = False
     bot.send_message(m.chat.id, f"✅ Текст варна сохранён:\n{warn_text}")
-    logger.info(f"Новый текст варна: {warn_text}")
 
 @bot.message_handler(commands=['cancel'])
 def cancel_cmd(m):
@@ -256,38 +288,73 @@ def cancel_cmd(m):
     waiting_save = False
     bot.send_message(m.chat.id, "Отменено.")
 
-# ===== СЕЙФ В ЛИЧКЕ С БОТОМ =====
+# ===== СЕЙФ (ЛИЧКА) =====
+def send_error_to_admin(text):
+    if ADMIN_ID:
+        try:
+            bot.send_message(ADMIN_ID, f"⚠️ Ошибка:\n{text}")
+        except:
+            pass
+
 @bot.message_handler(
     func=lambda m: m.from_user.id == ADMIN_ID and m.text and m.text.strip().lower() == "сейф"
 )
 def save_cmd(m):
     global waiting_save
     waiting_save = True
-    bot.send_message(m.chat.id, "Отправь медиа (фото, видео, голосовое, документ, стикер) — сохраню.")
+    bot.send_message(m.chat.id, "Отправь медиа — сохраню.")
 
 @bot.message_handler(
     func=lambda m: m.from_user.id == ADMIN_ID and waiting_save,
-    content_types=['photo', 'video', 'document', 'voice', 'sticker', 'audio']
+    content_types=['photo', 'video', 'document', 'voice', 'sticker', 'audio', 'video_note']
 )
 def save_media(m):
-    global saved_messages, waiting_save
-    
-    if m.photo:
-        saved_messages.append({'type': 'photo', 'data': m.photo[-1].file_id})
-    elif m.video:
-        saved_messages.append({'type': 'video', 'data': m.video.file_id})
-    elif m.document:
-        saved_messages.append({'type': 'document', 'data': m.document.file_id})
-    elif m.voice:
-        saved_messages.append({'type': 'voice', 'data': m.voice.file_id})
-    elif m.sticker:
-        saved_messages.append({'type': 'sticker', 'data': m.sticker.file_id})
-    elif m.audio:
-        saved_messages.append({'type': 'audio', 'data': m.audio.file_id})
-    
+    global waiting_save
     waiting_save = False
-    bot.send_message(m.chat.id, f"✅ Сохранено. Всего: {len(saved_messages)}")
-    logger.info(f"Сохранено медиа: {m.content_type}")
+
+    try:
+        if m.photo:
+            fid = m.photo[-1].file_id
+            fi = bot.get_file(fid)
+            d = bot.download_file(fi.file_path)
+            bot.send_photo(ADMIN_ID, d, caption="📸 Сохранено")
+            del d
+        elif m.video:
+            fid = m.video.file_id
+            fi = bot.get_file(fid)
+            d = bot.download_file(fi.file_path)
+            bot.send_video(ADMIN_ID, d, caption="🎬 Сохранено")
+            del d
+        elif m.video_note:
+            fid = m.video_note.file_id
+            fi = bot.get_file(fid)
+            d = bot.download_file(fi.file_path)
+            bot.send_video_note(ADMIN_ID, d)
+            del d
+        elif m.voice:
+            fid = m.voice.file_id
+            fi = bot.get_file(fid)
+            d = bot.download_file(fi.file_path)
+            bot.send_voice(ADMIN_ID, d)
+            del d
+        elif m.document:
+            fid = m.document.file_id
+            fi = bot.get_file(fid)
+            d = bot.download_file(fi.file_path)
+            bot.send_document(ADMIN_ID, d)
+            del d
+        elif m.sticker:
+            bot.send_sticker(ADMIN_ID, m.sticker.file_id)
+        elif m.audio:
+            fid = m.audio.file_id
+            fi = bot.get_file(fid)
+            d = bot.download_file(fi.file_path)
+            bot.send_audio(ADMIN_ID, d)
+            del d
+        bot.send_message(m.chat.id, "✅ Сохранено")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения: {e}")
+        send_error_to_admin(f"сейф: {e}")
 
 # ===== АФК =====
 def enter_afk():
@@ -295,22 +362,12 @@ def enter_afk():
     if afk_enabled:
         return
     afk_enabled = True
-    logger.info("АФК ВКЛЮЧЁН")
-
-    if ADMIN_ID and back_emoji_id is None:
-        try:
-            chat_info = bot.get_chat(ADMIN_ID)
-            if hasattr(chat_info, 'emoji_status_custom_emoji_id') and chat_info.emoji_status_custom_emoji_id:
-                back_emoji_id = chat_info.emoji_status_custom_emoji_id
-        except Exception as e:
-            logger.warning(f"Не удалось прочитать старый статус: {e}")
 
     if afk_emoji_id and ADMIN_ID:
         try:
             bot.set_user_emoji_status(user_id=ADMIN_ID, emoji_status_custom_emoji_id=afk_emoji_id)
-            logger.info(f"Статус установлен: {afk_emoji_id}")
         except Exception as e:
-            logger.error(f"Ошибка смены статуса: {e}")
+            logger.error(f"Ошибка АФК: {e}")
 
     if ADMIN_ID:
         bot.send_message(ADMIN_ID, "🌙 АФК включён")
@@ -320,7 +377,6 @@ def exit_afk():
     if not afk_enabled:
         return
     afk_enabled = False
-    logger.info("АФК ВЫКЛЮЧЁН")
 
     if ADMIN_ID:
         try:
@@ -329,7 +385,7 @@ def exit_afk():
             else:
                 bot.set_user_emoji_status(user_id=ADMIN_ID, emoji_status_custom_emoji_id="")
         except Exception as e:
-            logger.error(f"Ошибка смены статуса: {e}")
+            logger.error(f"Ошибка АФК: {e}")
         bot.send_message(ADMIN_ID, "☀️ АФК выключен")
 
 def afk_watcher():
@@ -350,13 +406,13 @@ def afk_recheck_watcher():
         if time.time() - last_activity >= AFK_RECHECK_DELAY:
             enter_afk()
 
-# ===== КОМАНДЫ =====
+# ===== КОМАНДЫ БОТА =====
 @bot.message_handler(commands=['afk_on'])
 def manual_afk_on(m):
     if m.from_user.id != ADMIN_ID:
         return
     enter_afk()
-    bot.send_message(m.chat.id, "АФК включён вручную.")
+    bot.send_message(m.chat.id, "АФК включён.")
 
 @bot.message_handler(commands=['afk_off'])
 def manual_afk_off(m):
@@ -365,7 +421,7 @@ def manual_afk_off(m):
     exit_afk()
     global last_activity
     last_activity = time.time()
-    bot.send_message(m.chat.id, "АФК выключен вручную.")
+    bot.send_message(m.chat.id, "АФК выключен.")
 
 @bot.message_handler(commands=['afk_time'])
 def set_afk_time(m):
@@ -374,17 +430,17 @@ def set_afk_time(m):
         return
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.send_message(m.chat.id, f"Текущее время: {afk_timeout} сек\nИспользование: /afk_time 300")
+        bot.send_message(m.chat.id, f"Текущее время: {afk_timeout} сек\n/afk_time 300")
         return
     try:
-        seconds = int(parts[1])
-        if seconds < 30 or seconds > 86400:
+        s = int(parts[1])
+        if s < 30 or s > 86400:
             bot.send_message(m.chat.id, "❌ От 30 до 86400 сек.")
             return
-        afk_timeout = seconds
-        bot.send_message(m.chat.id, f"✅ Время АФК: {seconds} сек")
+        afk_timeout = s
+        bot.send_message(m.chat.id, f"✅ Время АФК: {s} сек")
     except ValueError:
-        bot.send_message(m.chat.id, "❌ Отправь число.")
+        bot.send_message(m.chat.id, "❌ Число.")
 
 @bot.message_handler(commands=['status'])
 def status_cmd(m):
@@ -401,8 +457,7 @@ def status_cmd(m):
         f"• Текст мута: {mute_text}\n"
         f"• Текст варна: {warn_text}\n"
         f"• Лимит варнов: {warn_limit}\n"
-        f"• Замучено чатов: {len(muted_users)}\n"
-        f"• Сохранено медиа: {len(saved_messages)}"
+        f"• Замучено: {len(muted_users)}"
     )
     bot.send_message(m.chat.id, text)
 
@@ -422,31 +477,28 @@ def is_command(text, cmd):
 def handle_mute(m):
     cid = m.chat.id
     conn_id = m.business_connection_id
-    text = m.text.strip()
 
     try:
         bot.delete_business_messages(conn_id, [m.message_id])
-    except Exception as e:
-        logger.error(f"Ошибка удаления: {e}")
+    except:
+        pass
 
-    parts = text.split(maxsplit=1)
+    parts = m.text.strip().split(maxsplit=1)
     duration = None
     if len(parts) > 1:
-        time_str = parts[1].strip().lower()
-        match = re.match(r'^(\d+)\s*([сcмmчhдd]?)$', time_str)
+        match = re.match(r'^(\d+)\s*([сcмmчhдd]?)$', parts[1].strip().lower())
         if match:
-            value = int(match.group(1))
-            unit = match.group(2)
-            multipliers = {'с': 1, 'c': 1, 'м': 60, 'm': 60, 'ч': 3600, 'h': 3600, 'д': 86400, 'd': 86400}
-            duration = value * multipliers.get(unit, 1)
+            v = int(match.group(1))
+            u = match.group(2)
+            mult = {'с': 1, 'c': 1, 'м': 60, 'm': 60, 'ч': 3600, 'h': 3600, 'д': 86400, 'd': 86400}
+            duration = v * mult.get(u, 1)
 
     target_id = None
     if m.reply_to_message and m.reply_to_message.from_user:
         target_id = m.reply_to_message.from_user.id
-    elif m.from_user.id != ADMIN_ID:
-        target_id = m.from_user.id
     else:
-        target_id = chat_partners.get(cid)
+        if cid in chat_partners:
+            target_id = chat_partners[cid]["id"]
 
     if not target_id:
         try:
@@ -457,7 +509,6 @@ def handle_mute(m):
 
     until = time.time() + duration if duration else None
     muted_users[cid] = {"user_id": target_id, "until": until, "conn_id": conn_id}
-    logger.info(f"Замучен {target_id} в {cid}")
 
     markup = types.InlineKeyboardMarkup()
     btn = types.InlineKeyboardButton(
@@ -468,15 +519,8 @@ def handle_mute(m):
     markup.add(btn)
 
     try:
-        bot.send_message(
-            cid,
-            mute_text,
-            entities=mute_entities,
-            reply_markup=markup,
-            business_connection_id=conn_id
-        )
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
+        bot.send_message(cid, mute_text, entities=mute_entities, reply_markup=markup, business_connection_id=conn_id)
+    except:
         try:
             bot.send_message(cid, mute_text, reply_markup=markup, business_connection_id=conn_id)
         except:
@@ -487,21 +531,32 @@ def callback_unmute(call):
     cid = int(call.data.split("_")[1])
 
     if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "❌ Только админ может размутить.")
+        bot.answer_callback_query(call.id, "❌ Только админ.")
         return
 
     if cid in muted_users:
         del muted_users[cid]
-        logger.info(f"Мут снят через кнопку в чате {cid}")
         bot.answer_callback_query(call.id, "🔓 Мут снят")
+
         try:
-            bot.edit_message_reply_markup(
+            new_text = f'ты размучен пиши)<tg-emoji emoji-id="{UNMUTE_EMOJI_ID}">👋</tg-emoji>'
+            bot.edit_message_text(
                 chat_id=cid,
                 message_id=call.message.message_id,
-                reply_markup=None
+                text=new_text,
+                parse_mode="HTML"
             )
         except Exception as e:
             logger.error(f"Ошибка редактирования: {e}")
+            try:
+                bot.edit_message_text(chat_id=cid, message_id=call.message.message_id, text="ты размучен пиши)")
+            except:
+                pass
+
+        try:
+            bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
+        except:
+            pass
     else:
         bot.answer_callback_query(call.id, "❌ Мут уже снят")
 
@@ -524,7 +579,7 @@ def handle_unmute(m):
             pass
     else:
         try:
-            bot.send_message(cid, "❌ Нет активного мута", business_connection_id=conn_id)
+            bot.send_message(cid, "❌ Нет мута", business_connection_id=conn_id)
         except:
             pass
 
@@ -544,7 +599,8 @@ def handle_warn(m):
     if m.reply_to_message and m.reply_to_message.from_user:
         target_id = m.reply_to_message.from_user.id
     else:
-        target_id = chat_partners.get(cid)
+        if cid in chat_partners:
+            target_id = chat_partners[cid]["id"]
 
     if not target_id:
         try:
@@ -574,15 +630,421 @@ def handle_bypass(m):
     if bypass_enabled.get(cid):
         bypass_enabled[cid] = False
         try:
-            bot.send_message(cid, "🛑 Обход выключен", business_connection_id=conn_id)
+            text = f'Обход выключен <tg-emoji emoji-id="{BYPASS_EMOJI_ID}">🔄</tg-emoji>'
+            bot.send_message(cid, text, parse_mode="HTML", business_connection_id=conn_id)
         except:
             pass
     else:
         bypass_enabled[cid] = True
+        markup = types.InlineKeyboardMarkup()
+        btn = types.InlineKeyboardButton(
+            text="Выключить обход",
+            callback_data=f"bypass_off_{cid}",
+            style="danger"
+        )
+        markup.add(btn)
         try:
-            bot.send_message(cid, "🔄 Обход включён", business_connection_id=conn_id)
+            text = f'Обход включён <tg-emoji emoji-id="{BYPASS_EMOJI_ID}">🔄</tg-emoji>'
+            bot.send_message(cid, text, parse_mode="HTML", reply_markup=markup, business_connection_id=conn_id)
         except:
             pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("bypass_off_"))
+def callback_bypass_off(call):
+    cid = int(call.data.split("_")[2])
+
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Только админ.")
+        return
+
+    bypass_enabled[cid] = False
+    bot.answer_callback_query(call.id, "🛑 Обход выключен")
+
+    try:
+        new_text = f'Обход выключен <tg-emoji emoji-id="{BYPASS_EMOJI_ID}">🔄</tg-emoji>'
+        bot.edit_message_text(
+            chat_id=cid,
+            message_id=call.message.message_id,
+            text=new_text,
+            parse_mode="HTML"
+        )
+    except:
+        pass
+
+    try:
+        bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
+    except:
+        pass
+
+# ===== ЭХО =====
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "эхо")
+)
+def handle_echo(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    if echo_enabled.get(cid):
+        echo_enabled[cid] = False
+        try:
+            bot.send_message(cid, "🛑 Эхо выключено", business_connection_id=conn_id)
+        except:
+            pass
+    else:
+        echo_enabled[cid] = True
+        try:
+            bot.send_message(cid, "🔊 Эхо включено", business_connection_id=conn_id)
+        except:
+            pass
+
+# ===== СПАМ =====
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "спам")
+)
+def handle_spam(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    parts = m.text.strip().split(maxsplit=2)
+    if len(parts) < 2:
+        try:
+            bot.send_message(cid, "❌ Использование: спам слово 5", business_connection_id=conn_id)
+        except:
+            pass
+        return
+
+    word = parts[1]
+    count = 15
+    if len(parts) >= 3:
+        try:
+            count = int(parts[2])
+        except:
+            pass
+
+    if count > 30:
+        count = 30
+    if count < 1:
+        count = 1
+
+    for _ in range(count):
+        try:
+            bot.send_message(cid, word, business_connection_id=conn_id)
+            time.sleep(0.3)
+        except:
+            break
+
+# ===== АНИМАЦИЯ =====
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and (
+        is_command(m.text, "аним") or is_command(m.text, "анимация")
+    )
+)
+def handle_anim(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    parts = m.text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        return
+    text = parts[1]
+
+    try:
+        msg = bot.send_message(cid, "•", business_connection_id=conn_id)
+    except:
+        return
+
+    current = ""
+    for char in text:
+        current += char
+        try:
+            bot.edit_message_text(
+                current,
+                chat_id=cid,
+                message_id=msg.message_id,
+                business_connection_id=conn_id
+            )
+        except:
+            pass
+        time.sleep(0.1)
+
+# ===== ШАР =====
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "шар")
+)
+def handle_ball(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    answers = ["да", "нет", "возможно", "скорее нет", "скорее да", "не знаю", "спроси позже"]
+    ans = random.choice(answers)
+
+    try:
+        bot.send_message(cid, f"🎱 {ans}", business_connection_id=conn_id)
+    except:
+        pass
+
+# ===== РЕК =====
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "рек")
+)
+def handle_rek(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    try:
+        msg = bot.send_message(cid, "3...", business_connection_id=conn_id)
+    except:
+        return
+
+    time.sleep(1)
+    try:
+        bot.edit_message_text("2...", chat_id=cid, message_id=msg.message_id, business_connection_id=conn_id)
+    except:
+        pass
+    time.sleep(1)
+    try:
+        bot.edit_message_text("1...", chat_id=cid, message_id=msg.message_id, business_connection_id=conn_id)
+    except:
+        pass
+    time.sleep(1)
+
+    markup = types.InlineKeyboardMarkup()
+    btn = types.InlineKeyboardButton(
+        text="Тап",
+        callback_data=f"rek_tap_{cid}",
+        style="success"
+    )
+    markup.add(btn)
+
+    rek_games[cid] = {"winner": None, "admin_id": ADMIN_ID}
+
+    try:
+        bot.edit_message_text(
+            "🔥 БЫСТРЕЕ!",
+            chat_id=cid,
+            message_id=msg.message_id,
+            reply_markup=markup,
+            business_connection_id=conn_id
+        )
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("rek_tap_"))
+def callback_rek(call):
+    cid = int(call.data.split("_")[2])
+
+    if cid not in rek_games:
+        bot.answer_callback_query(call.id, "❌ Игра закончена")
+        return
+
+    game = rek_games[cid]
+    if game["winner"] is not None:
+        bot.answer_callback_query(call.id, "❌ Уже нажали")
+        return
+
+    uid = call.from_user.id
+    game["winner"] = uid
+
+    bot.answer_callback_query(call.id, "⚡ Ты нажал первым!")
+
+    if uid == ADMIN_ID:
+        name = "Ты"
+    else:
+        name = chat_partners.get(cid, {}).get("name", "Собеседник")
+
+    try:
+        bot.edit_message_text(
+            f"🏆 Победитель: {name}!",
+            chat_id=cid,
+            message_id=call.message.message_id
+        )
+    except:
+        pass
+    try:
+        bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
+    except:
+        pass
+
+    del rek_games[cid]
+
+# ===== РПС =====
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "рпс")
+)
+def handle_rps(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    if cid not in chat_partners:
+        try:
+            bot.send_message(cid, "❌ Собеседник ещё не писал.", business_connection_id=conn_id)
+        except:
+            pass
+        return
+
+    rps_games[cid] = {
+        "stage": "admin",
+        "admin_id": ADMIN_ID,
+        "partner_id": chat_partners[cid]["id"],
+        "admin_choice": None,
+        "partner_choice": None,
+        "msg_id": None
+    }
+
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    markup.add(
+        types.InlineKeyboardButton("🪨", callback_data=f"rps_admin_камень_{cid}", style="primary"),
+        types.InlineKeyboardButton("✂️", callback_data=f"rps_admin_ножницы_{cid}", style="primary"),
+        types.InlineKeyboardButton("📃", callback_data=f"rps_admin_бумага_{cid}", style="primary")
+    )
+
+    try:
+        msg = bot.send_message(
+            cid,
+            "🎮 РПС: твой ход, хозяин",
+            reply_markup=markup,
+            business_connection_id=conn_id
+        )
+        rps_games[cid]["msg_id"] = msg.message_id
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("rps_"))
+def callback_rps(call):
+    parts = call.data.split("_")
+    stage = parts[1]
+    choice = parts[2]
+    cid = int(parts[3])
+
+    if cid not in rps_games:
+        bot.answer_callback_query(call.id, "❌ Игра закончена")
+        return
+
+    game = rps_games[cid]
+    uid = call.from_user.id
+
+    if stage == "admin":
+        if uid != game["admin_id"]:
+            bot.answer_callback_query(call.id, "❌ Не твой ход!")
+            return
+        game["admin_choice"] = choice
+        game["stage"] = "partner"
+
+        markup = types.InlineKeyboardMarkup(row_width=3)
+        markup.add(
+            types.InlineKeyboardButton("🪨", callback_data=f"rps_partner_камень_{cid}", style="primary"),
+            types.InlineKeyboardButton("✂️", callback_data=f"rps_partner_ножницы_{cid}", style="primary"),
+            types.InlineKeyboardButton("📃", callback_data=f"rps_partner_бумага_{cid}", style="primary")
+        )
+        try:
+            bot.edit_message_text(
+                "🎮 РПС: ход собеседника",
+                chat_id=cid,
+                message_id=call.message.message_id,
+                reply_markup=markup
+            )
+        except:
+            pass
+        bot.answer_callback_query(call.id, f"✅ Ты выбрал: {choice}")
+
+    elif stage == "partner":
+        if uid != game["partner_id"]:
+            bot.answer_callback_query(call.id, "❌ Не твой ход!")
+            return
+        game["partner_choice"] = choice
+
+        admin_c = game["admin_choice"]
+        partner_c = choice
+
+        win_map = {"камень": "ножницы", "ножницы": "бумага", "бумага": "камень"}
+
+        if admin_c == partner_c:
+            result = "ничья"
+        elif win_map[admin_c] == partner_c:
+            result = "admin"
+        else:
+            result = "partner"
+
+        admin_name = bot.get_chat(game["admin_id"]).first_name or "Хозяин"
+        partner_name = chat_partners.get(cid, {}).get("name", "Собеседник")
+
+        if result == "admin":
+            text = f"🥇 Красавчик {admin_name}! Победа за тобой!"
+        elif result == "partner":
+            text = f"🥇 Красавчик {partner_name}! Победа за тобой!"
+        else:
+            text = "🤝 Ничья! Вы оба лучшие."
+
+        try:
+            bot.edit_message_text(
+                f"{text}\n\n🪨 {admin_c} vs {partner_c}",
+                chat_id=cid,
+                message_id=call.message.message_id
+            )
+        except:
+            pass
+        try:
+            bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
+        except:
+            pass
+
+        bot.answer_callback_query(call.id, "✅ Выбор принят")
+        del rps_games[cid]
+
+# ===== МОНЕТКА =====
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "монетка")
+)
+def handle_coin(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    try:
+        msg = bot.send_message(cid, "•", business_connection_id=conn_id)
+    except:
+        return
+
+    for dots in ["••", "•••"]:
+        time.sleep(0.5)
+        try:
+            bot.edit_message_text(dots, chat_id=cid, message_id=msg.message_id, business_connection_id=conn_id)
+        except:
+            pass
+
+    time.sleep(0.5)
+    result = random.choice(["орёл", "решка"])
+    try:
+        bot.edit_message_text(f"🪙 Выпал(а) {result}", chat_id=cid, message_id=msg.message_id, business_connection_id=conn_id)
+    except:
+        pass
 
 # ===== СЕЙФ В БИЗНЕС-ЧАТЕ =====
 @bot.business_message_handler(
@@ -599,7 +1061,7 @@ def handle_save_from_reply(m):
 
     if not m.reply_to_message:
         try:
-            bot.send_message(cid, "❌ Ответь на медиа словом «сейф».", business_connection_id=conn_id)
+            bot.send_message(cid, "❌ Ответь на медиа командой сейф", business_connection_id=conn_id)
         except:
             pass
         return
@@ -607,31 +1069,47 @@ def handle_save_from_reply(m):
     replied = m.reply_to_message
 
     try:
-        bot.forward_message(
-            chat_id=ADMIN_ID,
-            from_chat_id=cid,
-            message_id=replied.message_id
-        )
-        logger.info(f"Медиа переслано в ЛС админа из чата {cid}")
+        if replied.photo:
+            fid = replied.photo[-1].file_id
+            fi = bot.get_file(fid)
+            d = bot.download_file(fi.file_path)
+            bot.send_photo(ADMIN_ID, d, caption=f"📸 Из чата {cid}")
+            del d
+        elif replied.video:
+            fid = replied.video.file_id
+            fi = bot.get_file(fid)
+            d = bot.download_file(fi.file_path)
+            bot.send_video(ADMIN_ID, d, caption=f"🎬 Из чата {cid}")
+            del d
+        elif replied.video_note:
+            fid = replied.video_note.file_id
+            fi = bot.get_file(fid)
+            d = bot.download_file(fi.file_path)
+            bot.send_video_note(ADMIN_ID, d)
+            del d
+        elif replied.voice:
+            fid = replied.voice.file_id
+            fi = bot.get_file(fid)
+            d = bot.download_file(fi.file_path)
+            bot.send_voice(ADMIN_ID, d)
+            del d
+        elif replied.document:
+            fid = replied.document.file_id
+            fi = bot.get_file(fid)
+            d = bot.download_file(fi.file_path)
+            bot.send_document(ADMIN_ID, d)
+            del d
+        else:
+            try:
+                bot.copy_message(ADMIN_ID, cid, replied.message_id)
+            except Exception as e:
+                send_error_to_admin(f"сейф fallback: {e}")
     except Exception as e:
-        logger.error(f"Ошибка пересылки: {e}")
+        logger.error(f"Ошибка сейф: {e}")
         try:
-            if replied.photo:
-                bot.send_photo(ADMIN_ID, replied.photo[-1].file_id, caption=replied.caption or "")
-            elif replied.video:
-                bot.send_video(ADMIN_ID, replied.video.file_id, caption=replied.caption or "")
-            elif replied.document:
-                bot.send_document(ADMIN_ID, replied.document.file_id, caption=replied.caption or "")
-            elif replied.voice:
-                bot.send_voice(ADMIN_ID, replied.voice.file_id)
-            elif replied.sticker:
-                bot.send_sticker(ADMIN_ID, replied.sticker.file_id)
-            elif replied.audio:
-                bot.send_audio(ADMIN_ID, replied.audio.file_id)
-            else:
-                bot.send_message(ADMIN_ID, "❌ Это не поддерживаемое медиа.")
+            bot.copy_message(ADMIN_ID, cid, replied.message_id)
         except Exception as e2:
-            logger.error(f"Ошибка fallback: {e2}")
+            send_error_to_admin(f"сейф: {e2}")
 
 # ===== АКТИВНОСТЬ =====
 @bot.message_handler(
@@ -655,7 +1133,10 @@ def handle_business(m):
 
     if ADMIN_ID and uid != ADMIN_ID:
         if cid not in chat_partners:
-            chat_partners[cid] = uid
+            chat_partners[cid] = {
+                "id": uid,
+                "name": m.from_user.first_name or "Собеседник"
+            }
 
     # Мут
     if cid in muted_users:
@@ -674,25 +1155,38 @@ def handle_business(m):
         warn_info = warned_users[cid]
         if warn_info["user_id"] == uid and uid != ADMIN_ID:
             warn_info["count"] += 1
-            logger.info(f"Варн {warn_info['count']}/{warn_limit} для {uid}")
 
             if warn_info["count"] >= warn_limit:
                 muted_users[cid] = {"user_id": uid, "until": None, "conn_id": m.business_connection_id}
                 del warned_users[cid]
                 try:
-                    bot.send_message(cid, "🚫 Лимит варнов достигнут. Мут навсегда.", business_connection_id=m.business_connection_id)
+                    bot.send_message(cid, "🚫 Лимит варнов. Мут навсегда.", business_connection_id=m.business_connection_id)
                 except:
                     pass
             else:
                 text = warn_text.replace("{count}", str(warn_info["count"])).replace("{limit}", str(warn_limit))
                 try:
                     bot.send_message(cid, text, entities=warn_entities, business_connection_id=m.business_connection_id)
-                except Exception as e:
-                    logger.error(f"Ошибка варна: {e}")
+                except:
                     try:
                         bot.send_message(cid, text, business_connection_id=m.business_connection_id)
                     except:
                         pass
+
+    # Эхо
+    if ADMIN_ID and uid != ADMIN_ID and echo_enabled.get(cid):
+        try:
+            if m.text:
+                bot.send_message(cid, m.text, entities=m.entities, business_connection_id=m.business_connection_id)
+            elif m.sticker:
+                bot.send_sticker(cid, m.sticker.file_id, business_connection_id=m.business_connection_id)
+            elif m.photo:
+                bot.send_photo(cid, m.photo[-1].file_id, caption=m.caption, business_connection_id=m.business_connection_id)
+            elif m.video:
+                bot.send_video(cid, m.video.file_id, caption=m.caption, business_connection_id=m.business_connection_id)
+        except:
+            pass
+        return
 
     # Обход
     if ADMIN_ID and uid == ADMIN_ID and bypass_enabled.get(cid):
@@ -713,8 +1207,8 @@ def handle_business(m):
                 bot.send_document(cid, m.document.file_id, business_connection_id=m.business_connection_id)
             elif m.voice:
                 bot.send_voice(cid, m.voice.file_id, business_connection_id=m.business_connection_id)
-        except Exception as e:
-            logger.error(f"Ошибка обхода: {e}")
+        except:
+            pass
         return
 
     if ADMIN_ID and uid == ADMIN_ID:
@@ -744,19 +1238,5 @@ if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
 
     port = int(os.environ.get("PORT", 10000))
-    logger.info(f"Запуск Flask на порту {port}")
-    app.run(host="0.0.0.0", port=port)(target=afk_watcher, daemon=True).start()
-    threading.Thread(target=afk_recheck_watcher, daemon=True).start()
-
-    def run_bot():
-        logger.info("Запуск бота...")
-        try:
-            bot.polling(none_stop=True, interval=1)
-        except Exception as e:
-            logger.error(f"Бот упал: {e}")
-
-    threading.Thread(target=run_bot, daemon=True).start()
-
-    port = int(os.environ.get("PORT", 10000))
-    logger.info(f"Запуск Flask на порту {port}")
+    logger.info(f"Flask на порту {port}")
     app.run(host="0.0.0.0", port=port)
