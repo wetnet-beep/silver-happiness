@@ -11,6 +11,7 @@ from telebot import types
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "ВСТАВЬ_ТОКЕН_СЮДА")
 PASSWORD = "qwer1"
 ADMIN_ID = None
+ADMIN_NAME = "Хозяин"
 
 AFK_SHORT_THRESHOLD = 5 * 60
 AFK_RECHECK_DELAY = 10 * 60
@@ -34,7 +35,7 @@ afk_timeout = 2 * 60 * 60
 business_conn_id = None
 
 muted_users = {}
-chat_partners = {}  # {chat_id: {"id": ..., "name": ...}}
+chat_partners = {}
 mute_text = "🚫 Пользователь замучен"
 mute_entities = None
 waiting_mute_text = False
@@ -57,6 +58,7 @@ waiting_save = False
 UNMUTE_EMOJI_ID = "5386436816557601037"
 BYPASS_EMOJI_ID = "5841243255856960314"
 HELLO_EMOJI_ID = "5386436816557601037"
+ECHO_EMOJI_ID = "5841243255856960314"
 
 # ===== СПИСОК КОМАНД =====
 COMMANDS_LIST = """<b>📋 Список команд</b>
@@ -66,7 +68,7 @@ COMMANDS_LIST = """<b>📋 Список команд</b>
 <code>/status</code> — статус бота
 <code>/afk_on</code> — вкл АФК
 <code>/afk_off</code> — выкл АФК
-<code>/afk_time 300</code> — время АФК (30–86400 сек)
+<code>/afk_time 300</code> — время АФК
 <code>/set_mute_text</code> — текст после мута
 <code>/set_warn_text</code> — текст варна
 <code>/set_warn_limit 3</code> — лимит варнов
@@ -75,21 +77,17 @@ COMMANDS_LIST = """<b>📋 Список команд</b>
 <code>/cancel</code> — отменить ввод
 
 <b>🎬 В бизнес-чатах:</b>
-<code>мут</code> — замутить навсегда
-<code>мут 10м</code> — замутить на 10 минут
-<code>анмут</code> — снять мут
+<code>мут</code> / <code>мут 10м</code> / <code>анмут</code>
 <code>варн</code> — активировать варны
 <code>обход</code> — вкл/выкл дублирование
 <code>эхо</code> — повторять за собеседником
 <code>сейф</code> — ответом на медиа → в ЛС
-<code>спам слово 5</code> — спам (по умолч. 15, макс 30)
+<code>спам слово 5</code> — спам (до 30)
 <code>аним текст</code> — печатает по буквам
 <code>шар вопрос</code> — магический шар
 <code>рек</code> — игра на реакцию
 <code>рпс</code> — камень-ножницы-бумага
-<code>монетка</code> — подбросить монетку
-
-<b>💡 Premium-эмодзи для АФК:</b> просто отправь боту."""
+<code>монетка</code> — подбросить монетку"""
 
 # ===== ПРИВЕТСТВИЕ =====
 def send_hello(chat_id):
@@ -130,13 +128,14 @@ def start_cmd(m):
 
 @bot.message_handler(func=lambda m: user_state.get(m.from_user.id) == 'awaiting_password')
 def check_password(m):
-    global ADMIN_ID
+    global ADMIN_ID, ADMIN_NAME
     if m.text == PASSWORD:
         user_state[m.from_user.id] = 'authorized'
         ADMIN_ID = m.from_user.id
+        ADMIN_NAME = m.from_user.first_name or "Хозяин"
         bot.send_message(m.chat.id, "✅ Пароль принят.")
         send_hello(m.chat.id)
-        logger.info(f"Админ авторизован: {m.from_user.id}")
+        logger.info(f"Админ авторизован: {m.from_user.id} ({ADMIN_NAME})")
     else:
         bot.send_message(m.chat.id, "❌ Неверный пароль. Попробуй ещё раз:")
 
@@ -358,7 +357,7 @@ def save_media(m):
 
 # ===== АФК =====
 def enter_afk():
-    global afk_enabled, ADMIN_ID, afk_emoji_id, back_emoji_id
+    global afk_enabled, ADMIN_ID, afk_emoji_id
     if afk_enabled:
         return
     afk_enabled = True
@@ -430,7 +429,7 @@ def set_afk_time(m):
         return
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.send_message(m.chat.id, f"Текущее время: {afk_timeout} сек\n/afk_time 300")
+        bot.send_message(m.chat.id, f"Текущее: {afk_timeout} сек\n/afk_time 300")
         return
     try:
         s = int(parts[1])
@@ -548,10 +547,6 @@ def callback_unmute(call):
             )
         except Exception as e:
             logger.error(f"Ошибка редактирования: {e}")
-            try:
-                bot.edit_message_text(chat_id=cid, message_id=call.message.message_id, text="ты размучен пиши)")
-            except:
-                pass
 
         try:
             bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
@@ -691,15 +686,51 @@ def handle_echo(m):
     if echo_enabled.get(cid):
         echo_enabled[cid] = False
         try:
-            bot.send_message(cid, "🛑 Эхо выключено", business_connection_id=conn_id)
+            text = f'Эхо выключено <tg-emoji emoji-id="{ECHO_EMOJI_ID}">🔇</tg-emoji>'
+            bot.send_message(cid, text, parse_mode="HTML", business_connection_id=conn_id)
         except:
             pass
     else:
         echo_enabled[cid] = True
+        markup = types.InlineKeyboardMarkup()
+        btn = types.InlineKeyboardButton(
+            text="Выключить эхо",
+            callback_data=f"echo_off_{cid}",
+            style="danger"
+        )
+        markup.add(btn)
         try:
-            bot.send_message(cid, "🔊 Эхо включено", business_connection_id=conn_id)
+            text = f'Эхо включено <tg-emoji emoji-id="{ECHO_EMOJI_ID}">🔊</tg-emoji>'
+            bot.send_message(cid, text, parse_mode="HTML", reply_markup=markup, business_connection_id=conn_id)
         except:
             pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("echo_off_"))
+def callback_echo_off(call):
+    cid = int(call.data.split("_")[2])
+
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Только админ.")
+        return
+
+    echo_enabled[cid] = False
+    bot.answer_callback_query(call.id, "🛑 Эхо выключено")
+
+    try:
+        new_text = f'Эхо выключено <tg-emoji emoji-id="{ECHO_EMOJI_ID}">🔇</tg-emoji>'
+        bot.edit_message_text(
+            chat_id=cid,
+            message_id=call.message.message_id,
+            text=new_text,
+            parse_mode="HTML"
+        )
+    except:
+        pass
+
+    try:
+        bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
+    except:
+        pass
 
 # ===== СПАМ =====
 @bot.business_message_handler(
@@ -836,7 +867,7 @@ def handle_rek(m):
     )
     markup.add(btn)
 
-    rek_games[cid] = {"winner": None, "admin_id": ADMIN_ID}
+    rek_games[cid] = {"winner": None, "admin_id": ADMIN_ID, "admin_name": ADMIN_NAME}
 
     try:
         bot.edit_message_text(
@@ -865,16 +896,16 @@ def callback_rek(call):
     uid = call.from_user.id
     game["winner"] = uid
 
-    bot.answer_callback_query(call.id, "⚡ Ты нажал первым!")
+    bot.answer_callback_query(call.id, "⚡ Первый!")
 
     if uid == ADMIN_ID:
-        name = "Ты"
+        name = game["admin_name"]
     else:
         name = chat_partners.get(cid, {}).get("name", "Собеседник")
 
     try:
         bot.edit_message_text(
-            f"🏆 Победитель: {name}!",
+            f"🏆 {name} победил!",
             chat_id=cid,
             message_id=call.message.message_id
         )
@@ -909,7 +940,9 @@ def handle_rps(m):
     rps_games[cid] = {
         "stage": "admin",
         "admin_id": ADMIN_ID,
+        "admin_name": ADMIN_NAME,
         "partner_id": chat_partners[cid]["id"],
+        "partner_name": chat_partners[cid]["name"],
         "admin_choice": None,
         "partner_choice": None,
         "msg_id": None
@@ -925,7 +958,7 @@ def handle_rps(m):
     try:
         msg = bot.send_message(
             cid,
-            "🎮 РПС: твой ход, хозяин",
+            f"🎮 РПС: твой ход, {ADMIN_NAME}",
             reply_markup=markup,
             business_connection_id=conn_id
         )
@@ -951,6 +984,10 @@ def callback_rps(call):
         if uid != game["admin_id"]:
             bot.answer_callback_query(call.id, "❌ Не твой ход!")
             return
+        if game["admin_choice"] is not None:
+            bot.answer_callback_query(call.id, "❌ Ты уже выбрал!")
+            return
+
         game["admin_choice"] = choice
         game["stage"] = "partner"
 
@@ -962,19 +999,32 @@ def callback_rps(call):
         )
         try:
             bot.edit_message_text(
-                "🎮 РПС: ход собеседника",
+                f"🎮 РПС: ход {game['partner_name']}",
                 chat_id=cid,
                 message_id=call.message.message_id,
                 reply_markup=markup
             )
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Ошибка РПС admin→partner: {e}")
+            try:
+                bot.send_message(
+                    cid,
+                    f"🎮 РПС: ход {game['partner_name']}",
+                    reply_markup=markup,
+                    business_connection_id=game.get("conn_id")
+                )
+            except:
+                pass
         bot.answer_callback_query(call.id, f"✅ Ты выбрал: {choice}")
 
     elif stage == "partner":
         if uid != game["partner_id"]:
             bot.answer_callback_query(call.id, "❌ Не твой ход!")
             return
+        if game["partner_choice"] is not None:
+            bot.answer_callback_query(call.id, "❌ Ты уже выбрал!")
+            return
+
         game["partner_choice"] = choice
 
         admin_c = game["admin_choice"]
@@ -989,8 +1039,8 @@ def callback_rps(call):
         else:
             result = "partner"
 
-        admin_name = bot.get_chat(game["admin_id"]).first_name or "Хозяин"
-        partner_name = chat_partners.get(cid, {}).get("name", "Собеседник")
+        admin_name = game["admin_name"]
+        partner_name = game["partner_name"]
 
         if result == "admin":
             text = f"🥇 Красавчик {admin_name}! Победа за тобой!"
@@ -1001,7 +1051,7 @@ def callback_rps(call):
 
         try:
             bot.edit_message_text(
-                f"{text}\n\n🪨 {admin_c} vs {partner_c}",
+                f"{text}\n\n{admin_c} vs {partner_c}",
                 chat_id=cid,
                 message_id=call.message.message_id
             )
