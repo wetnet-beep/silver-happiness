@@ -24,6 +24,16 @@ logger = logging.getLogger(__name__)
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 
+# ===== СЛОВАРЬ ДЛЯ КРОКОДИЛА =====
+WORDS = []
+try:
+    with open('words.txt', 'r', encoding='utf-8') as f:
+        WORDS = [line.strip() for line in f if line.strip()]
+    logger.info(f"Загружено слов для Крокодила: {len(WORDS)}")
+except Exception as e:
+    logger.error(f"Ошибка чтения words.txt: {e}")
+    WORDS = ["солнце", "машина", "кошка", "дерево", "собака", "яблоко", "книга", "стол", "окно", "дверь"]
+
 # ===== СОСТОЯНИЕ =====
 user_state = {}
 afk_enabled = False
@@ -48,13 +58,14 @@ waiting_warn_text = False
 warned_users = {}
 
 bypass_enabled = {}
-bypass_msg_ids = {}  # {cid: {"msg_id": ..., "conn_id": ...}}
+bypass_msg_ids = {}
 
 echo_enabled = {}
-echo_msg_ids = {}    # {cid: {"msg_id": ..., "conn_id": ...}}
+echo_msg_ids = {}
 
 rps_games = {}
 rek_games = {}
+crocodile_games = {}
 
 waiting_save = False
 
@@ -88,9 +99,11 @@ COMMANDS_LIST = """<b>📋 Список команд</b>
 <code>спам слово 5</code> — спам (до 30)
 <code>аним текст</code> — печатает по буквам
 <code>шар вопрос</code> — магический шар
+<code>инфо</code> — информация о собеседнике
 <code>рек</code> — игра на реакцию
 <code>рпс</code> — камень-ножницы-бумага
-<code>монетка</code> — подбросить монетку"""
+<code>монетка</code> — подбросить монетку
+<code>крокодил</code> — игра в крокодила"""
 
 # ===== ПРИВЕТСТВИЕ =====
 def send_hello(chat_id):
@@ -459,6 +472,7 @@ def status_cmd(m):
         f"• Текст мута: {mute_text}\n"
         f"• Текст варна: {warn_text}\n"
         f"• Лимит варнов: {warn_limit}\n"
+        f"• Слов в словаре: {len(WORDS)}\n"
         f"• Замучено: {len(muted_users)}"
     )
     bot.send_message(m.chat.id, text)
@@ -638,7 +652,6 @@ def handle_bypass(m):
             data = bypass_msg_ids[cid]
             try:
                 bot.delete_business_messages(data["conn_id"], [data["msg_id"]])
-                logger.info(f"Сообщение обхода удалено в {cid}")
             except Exception as e:
                 logger.error(f"Ошибка удаления обхода: {e}")
             del bypass_msg_ids[cid]
@@ -673,9 +686,8 @@ def callback_bypass_off(call):
         data = bypass_msg_ids[cid]
         try:
             bot.delete_business_messages(data["conn_id"], [data["msg_id"]])
-            logger.info(f"Сообщение обхода удалено в {cid}")
-        except Exception as e:
-            logger.error(f"Ошибка удаления обхода: {e}")
+        except:
+            pass
         del bypass_msg_ids[cid]
 
 # ===== ЭХО =====
@@ -696,9 +708,8 @@ def handle_echo(m):
             data = echo_msg_ids[cid]
             try:
                 bot.delete_business_messages(data["conn_id"], [data["msg_id"]])
-                logger.info(f"Сообщение эхо удалено в {cid}")
-            except Exception as e:
-                logger.error(f"Ошибка удаления эхо: {e}")
+            except:
+                pass
             del echo_msg_ids[cid]
     else:
         echo_enabled[cid] = True
@@ -731,9 +742,8 @@ def callback_echo_off(call):
         data = echo_msg_ids[cid]
         try:
             bot.delete_business_messages(data["conn_id"], [data["msg_id"]])
-            logger.info(f"Сообщение эхо удалено в {cid}")
-        except Exception as e:
-            logger.error(f"Ошибка удаления эхо: {e}")
+        except:
+            pass
         del echo_msg_ids[cid]
 
 # ===== СПАМ =====
@@ -833,6 +843,57 @@ def handle_ball(m):
         bot.send_message(cid, f"🎱 {ans}", business_connection_id=conn_id)
     except:
         pass
+
+# ===== ИНФО =====
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "инфо")
+)
+def handle_info(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    target = None
+    if m.reply_to_message and m.reply_to_message.from_user:
+        target = m.reply_to_message.from_user
+    elif cid in chat_partners:
+        # Пробуем получить через get_chat
+        try:
+            target = bot.get_chat(chat_partners[cid]["id"])
+        except:
+            target = None
+
+    if not target:
+        try:
+            bot.send_message(cid, "❌ Не знаю, о ком инфо.", business_connection_id=conn_id)
+        except:
+            pass
+        return
+
+    name = target.first_name or "—"
+    if hasattr(target, 'last_name') and target.last_name:
+        name += f" {target.last_name}"
+
+    username = f"@{target.username}" if hasattr(target, 'username') and target.username else "нет"
+    uid = target.id
+
+    is_prem = "✅" if hasattr(target, 'is_premium') and target.is_premium else "❌"
+
+    text = (
+        f"👤 <b>Информация о собеседнике</b>\n\n"
+        f"📝 Имя: <code>{name}</code>\n"
+        f"🔗 Юзернейм: <code>{username}</code>\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"⭐ Premium: {is_prem}"
+    )
+
+    try:
+        bot.send_message(cid, text, parse_mode="HTML", business_connection_id=conn_id)
+    except Exception as e:
+        logger.error(f"Ошибка инфо: {e}")
 
 # ===== РЕК =====
 @bot.business_message_handler(
@@ -1114,6 +1175,76 @@ def handle_coin(m):
     except:
         pass
 
+# ===== КРОКОДИЛ =====
+@bot.business_message_handler(
+    func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "крокодил")
+)
+def handle_crocodile(m):
+    cid = m.chat.id
+    conn_id = m.business_connection_id
+    try:
+        bot.delete_business_messages(conn_id, [m.message_id])
+    except:
+        pass
+
+    if cid not in chat_partners:
+        try:
+            bot.send_message(cid, "❌ Собеседник ещё не писал.", business_connection_id=conn_id)
+        except:
+            pass
+        return
+
+    word = random.choice(WORDS) if WORDS else "солнце"
+
+    crocodile_games[cid] = {
+        "leader_id": ADMIN_ID,
+        "leader_name": ADMIN_NAME,
+        "guesser_id": chat_partners[cid]["id"],
+        "guesser_name": chat_partners[cid]["name"],
+        "word": word,
+        "msg_id": None,
+        "conn_id": conn_id
+    }
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("👀 Посмотреть слово", callback_data=f"croco_show_{cid}", style="primary"),
+        types.InlineKeyboardButton("🔄 Сменить слово", callback_data=f"croco_change_{cid}", style="danger")
+    )
+
+    text = f"🐊 Игра «Крокодил» начата!\n\n🎯 Угадывает: {chat_partners[cid]['name']}\n👑 Ведущий: {ADMIN_NAME}"
+
+    try:
+        msg = bot.send_message(cid, text, reply_markup=markup, business_connection_id=conn_id)
+        crocodile_games[cid]["msg_id"] = msg.message_id
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("croco_"))
+def callback_crocodile(call):
+    parts = call.data.split("_")
+    action = parts[1]
+    cid = int(parts[2])
+
+    if cid not in crocodile_games:
+        bot.answer_callback_query(call.id, "❌ Игра закончена")
+        return
+
+    game = crocodile_games[cid]
+    uid = call.from_user.id
+
+    # Только ведущий может нажимать
+    if uid != game["leader_id"]:
+        bot.answer_callback_query(call.id, "❌ Только ведущий может нажимать!", show_alert=True)
+        return
+
+    if action == "show":
+        bot.answer_callback_query(call.id, f"🎯 Слово: {game['word']}", show_alert=True)
+    elif action == "change":
+        new_word = random.choice(WORDS) if WORDS else "солнце"
+        game["word"] = new_word
+        bot.answer_callback_query(call.id, f"🔄 Новое слово: {new_word}", show_alert=True)
+
 # ===== СЕЙФ В БИЗНЕС-ЧАТЕ =====
 @bot.business_message_handler(
     func=lambda m: m.text and m.from_user.id == ADMIN_ID and is_command(m.text, "сейф")
@@ -1200,11 +1331,11 @@ def handle_business(m):
     uid = m.from_user.id
 
     if ADMIN_ID and uid != ADMIN_ID:
-        if cid not in chat_partners:
-            chat_partners[cid] = {
-                "id": uid,
-                "name": m.from_user.first_name or "Собеседник"
-            }
+        # Обновляем имя при каждом сообщении
+        chat_partners[cid] = {
+            "id": uid,
+            "name": m.from_user.first_name or "Собеседник"
+        }
 
     # Мут
     if cid in muted_users:
@@ -1240,6 +1371,42 @@ def handle_business(m):
                         bot.send_message(cid, text, business_connection_id=m.business_connection_id)
                     except:
                         pass
+
+    # Крокодил — проверка угадывания
+    if cid in crocodile_games:
+        game = crocodile_games[cid]
+        if uid == game["guesser_id"] and m.text:
+            if m.text.strip().lower() == game["word"].lower():
+                # Угадал!
+                old_guesser = game["guesser_name"]
+                old_leader_id = game["leader_id"]
+                old_leader_name = game["leader_name"]
+
+                # Меняем ведущего и угадывающего
+                game["leader_id"] = game["guesser_id"]
+                game["leader_name"] = game["guesser_name"]
+                game["guesser_id"] = old_leader_id
+                game["guesser_name"] = old_leader_name
+                game["word"] = random.choice(WORDS) if WORDS else "солнце"
+
+                markup = types.InlineKeyboardMarkup(row_width=2)
+                markup.add(
+                    types.InlineKeyboardButton("👀 Посмотреть слово", callback_data=f"croco_show_{cid}", style="primary"),
+                    types.InlineKeyboardButton("🔄 Сменить слово", callback_data=f"croco_change_{cid}", style="danger")
+                )
+
+                text = (
+                    f"🎉 {old_guesser} угадал слово: <b>{m.text.strip()}</b>!\n\n"
+                    f"🐊 Продолжаем!\n"
+                    f"🎯 Угадывает: {game['guesser_name']}\n"
+                    f"👑 Ведущий: {game['leader_name']}"
+                )
+
+                try:
+                    bot.send_message(cid, text, parse_mode="HTML", reply_markup=markup, business_connection_id=m.business_connection_id)
+                except:
+                    pass
+                return
 
     # Эхо
     if ADMIN_ID and uid != ADMIN_ID and echo_enabled.get(cid):
